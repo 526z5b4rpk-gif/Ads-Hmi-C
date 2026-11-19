@@ -4,7 +4,7 @@ IHM temps réel pour automates Beckhoff (ADS). Deux parties indépendantes :
 
 | Partie | Langage | Rôle |
 |---|---|---|
-| **Service** (`src/`) | C99, sans dépendance hors cJSON (compilable avec LabWindows/CVI 2020, MinGW, gcc, clang) | source de données (simulateur, ADS au jalon 2), détection des changements, serveur HTTP + WebSocket, écrans et configuration |
+| **Service** (`src/`) | C99, sans dépendance hors cJSON (compilable avec LabWindows/CVI 2020, MinGW, gcc, clang) | source de données (automate Beckhoff en ADS, ou simulateur), détection des changements, serveur HTTP + WebSocket, écrans et configuration |
 | **Interface** (`web/`) | HTML/CSS/JS compilés (sources TypeScript + React dans le projet `ads-hmi-studio`) ; `calculs.html` en JavaScript pur | affichage, éditeur d'écrans, édition des variables calculées ; aucune logique automate |
 
 Le service parle exactement le même protocole que le serveur Node de `ads-hmi-studio` : le front web existant
@@ -38,6 +38,31 @@ Pour un poste opérateur : `chromium --kiosk http://127.0.0.1:8080/#/run/demo` (
 Windows : voir **[docs/WINDOWS.md](docs/WINDOWS.md)** (installation du kit, environnement de développement,
 release). En bref : `deploy\windows\build.bat test` sous Windows avec gcc MinGW-w64, ou `make windows` /
 `make dist-windows` en compilation croisée depuis macOS/Linux. LabWindows/CVI 2020 : [cvi/README.md](cvi/README.md).
+
+## Connexion à un automate (ADS)
+
+Client AMS/TCP intégré (`src/ads.c`), sans bibliothèque Beckhoff : réglage dans l'éditeur (*Configuration*)
+ou dans `data/config.json`, section `ads` avec `"source": "ads"`.
+
+| Clé | Rôle |
+|---|---|
+| `mode` | `direct` : connexion directe à l'automate (routerAddress = adresse IP de l'automate) ; une **route** vers `localAmsNetId` doit exister sur l'automate (TwinCAT › Routes, ou « Add Route »). `router` : passage par le routeur TwinCAT du poste (routerAddress = `127.0.0.1`, TwinCAT/ADS installé sur le PC), port AMS attribué par le routeur |
+| `targetAmsNetId`, `targetAdsPort` | automate (ex. `192.168.1.10.1.1`, port `851` = premier runtime PLC TwinCAT 3, `801` en TwinCAT 2) |
+| `routerAddress`, `routerTcpPort` | adresse IP et port TCP ADS (48898) |
+| `localAmsNetId`, `localAdsPort` | adresse AMS de ce poste (mode direct uniquement) |
+| `symbols` | symboles racines lus en entier, ex. `["GVL_HMI.stHmi"]` : une structure dédiée à l'IHM est recommandée |
+| `cycleTime`, `sendOnChange` | contrôle des changements par l'automate (ms) ; envoi sur changement ou à chaque cycle |
+| `maxArrayExpand` | nombre maximal d'éléments affichés par tableau |
+
+Fonctionnement : table des types lue en une requête, une notification par symbole racine (le bloc entier
+est envoyé dès qu'un octet change), écritures à l'adresse de la variable (par handle pour un `BIT`), état
+de l'automate lu chaque seconde (STOP signalé, coupure détectée), rechargement automatique des symboles
+après téléchargement d'un nouveau programme, reconnexion toutes les 3 s. Types pris en charge : types
+élémentaires, `STRING`/`WSTRING`, énumérations, alias, structures et blocs fonctionnels imbriqués, tableaux
+multidimensionnels, `BIT` ; pointeurs, références et interfaces ignorés.
+
+Essai sans automate : `node tests/fake-plc.mjs 48898` lance un faux automate (symbole `MAIN.stPlc`,
+AMS Net ID quelconque, port 851), puis configurer routerAddress `127.0.0.1`.
 
 ## Variables calculées
 
@@ -86,7 +111,9 @@ make test            # unitaires (UBSan ; ASan sous Linux ; fuites contrôlées 
   (tableaux multidimensionnels, bits), codec (bornes, troncature, énumérations), hub (deltas), simulateur,
   poignée de main WebSocket (RFC 6455).
 - `tests/e2e.mjs` : API REST, front, WebSocket (schéma, deltas, écritures, boucle commande → retour),
-  écrans, changement de configuration, 20 clients simultanés, protections, `config.json` illisible.
+  écrans, changement de configuration, 20 clients simultanés, protections, `config.json` illisible,
+  source ADS contre un faux automate (`tests/fake-plc.mjs`, format validé avec la bibliothèque ads-client) :
+  types, écritures, STOP, nouveau programme, coupure et reconnexion, mode routeur.
 
 ## Architecture du service
 
@@ -97,6 +124,7 @@ make test            # unitaires (UBSan ; ASan sous Linux ; fuites contrôlées 
 | `calc.c` | expressions des variables calculées : analyse en notation polonaise inverse, évaluation |
 | `types.c` | arbre de types neutre, calcul des offsets (alignement TwinCAT), mise à plat en variables |
 | `codec.c` | décodage/encodage little-endian, contrôle des bornes, STRING (Latin-1) / WSTRING (UTF-16) |
+| `ads.c` | client ADS : AMS/TCP, table des types, symboles, notifications, écritures, reconnexion |
 | `sim.c` | simulateur de procédé (bloc binaire identique à un automate) |
 | `store.c` | `config.json` et écrans, écriture atomique, configuration illisible |
 | `http.c` | serveur HTTP/1.1 + WebSocket, `poll()` non bloquant, mono-thread |
@@ -132,7 +160,7 @@ Navigateur → serveur : `{"t":"w","id":1,"path":"SIM.stHmi.stCmd.bMarche","valu
 ## Feuille de route
 
 1. ~~Service C + simulateur + protocole web~~ (ce jalon)
-2. Client ADS en C (AMS/TCP direct, upload des symboles et des types, notifications, écritures)
+2. ~~Client ADS en C (AMS/TCP direct, upload des symboles et des types, notifications, écritures)~~
 3. Lancement du navigateur en kiosque par le service, code de retour (bouton « Quitter »)
 4. Jeton d'accès / mode lecture seule pour l'accès réseau ; validation Windows sous CVI 2020
    (gcc MinGW-w64 : compilé sans avertissement, tests exécutés sous Windows par la CI)

@@ -96,5 +96,7 @@ void hub_source_status(hub_t *h, conn_state state, const char *message);
 /* ---- fabriques des sources ---- */
 
 source_t *sim_new(hub_t *h, int cycle_ms);
+/** source ADS (section « ads » de la configuration) ; NULL et message dans err si configuration invalide */
+source_t *ads_new(hub_t *h, const cJSON *ads_cfg, char *err, size_t cap);
 
 #endif

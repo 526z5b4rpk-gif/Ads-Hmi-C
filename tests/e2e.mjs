@@ -7,6 +7,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startFakePlc } from './fake-plc.mjs';
 
 const BIN = path.resolve(process.argv[2] ?? 'build/hmi-service');
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -272,6 +273,105 @@ try {
   const code = await stop(s3);
   check(WIN ? code !== 'timeout' : code === 0, 'arrêt propre');
   if (/runtime error|AddressSanitizer|LeakSanitizer/.test(s3.log())) { failures++; console.log(s3.log()); }
+}
+
+/* ------------------------------------------------------------------------------------------ */
+
+const adsConfig = (plc, extra = {}) => (dir) => fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+  source: 'ads',
+  ads: { targetAmsNetId: '10.0.0.2.1.1', targetAdsPort: 851, mode: 'direct', routerAddress: '127.0.0.1', routerTcpPort: plc.port,
+    localAmsNetId: '10.0.0.9.1.1', localAdsPort: 32750, symbols: ['MAIN.stPlc'], cycleTime: 10, ...extra },
+}));
+const leafOf = (sch, p) => sch?.schema.leaves.find((l) => l.path === p);
+const valueOf = (sch, p) => sch?.values[leafOf(sch, p)?.i];
+
+console.log('Source ADS (faux automate)');
+const plc = await startFakePlc({ cycleMs: 20 });
+const s4 = await start(adsConfig(plc));
+try {
+  const c = wsClient(s4.base);
+  const sch = await c.waitFor((m) => m.t === 'schema' && m.schema.leaves.length > 0, 5000);
+  check(sch?.schema.leaves.length === 12, `schéma lu sur l'automate (${sch?.schema.leaves.length} variables)`);
+  check(!leafOf(sch, 'MAIN.stPlc.pPtr'), 'pointeur ignoré');
+  const temp = leafOf(sch, 'MAIN.stPlc.rTemp');
+  check(temp?.type === 'REAL' && temp.comment === 'Température four' && temp.attrs?.unit === '°C', 'type, commentaire et attribut UTF-8');
+  check(leafOf(sch, 'MAIN.stPlc.nCount')?.type === 'DINT' && valueOf(sch, 'MAIN.stPlc.nCount') === 0, 'type de base absent de la table (DINT)');
+  const mode = leafOf(sch, 'MAIN.stPlc.eMode');
+  check(mode?.kind === 'enum' && mode.enums?.some((e) => e.name === 'Defaut' && e.value === -1) && valueOf(sch, 'MAIN.stPlc.eMode') === 1, 'énumération (valeur négative comprise)');
+  check(valueOf(sch, 'MAIN.stPlc.sMsg') === 'Bonjour' && valueOf(sch, 'MAIN.stPlc.aVal[3]') === 3.5, 'STRING et tableau');
+  check(leafOf(sch, 'MAIN.stPlc.rPress')?.type === 'T_Pression' && leafOf(sch, 'MAIN.stPlc.rPress')?.attrs?.unit === 'bar', "alias : nom et attribut du type conservés");
+  check(valueOf(sch, 'MAIN.stPlc.stSub.bBit0') === true && valueOf(sch, 'MAIN.stPlc.stSub.bBit1') === false && valueOf(sch, 'MAIN.stPlc.stSub.iX') === 7,
+    'membres BIT (drapeau sur le membre ou sur le type)');
+  const st = await c.waitFor((m) => m.t === 'status' && m.status.state === 'connected', 3000);
+  check(st?.status.source === 'ads', 'statut connecté');
+
+  let w = await c.write('MAIN.stPlc.stSub.bBit1', true);
+  check(w?.ok && plc.mem[66] === 0b11, 'écriture d\'un BIT par handle (bit voisin conservé)');
+  w = await c.write('MAIN.stPlc.rTemp', 42.5);
+  check(w?.ok && plc.mem.readFloatLE(4) === 42.5, 'écriture REAL à l\'adresse du symbole');
+  w = await c.write('MAIN.stPlc.eMode', 'Manu');
+  check(w?.ok && plc.mem.readInt16LE(12) === 0, "écriture d'une énumération par son nom");
+  w = await c.write('MAIN.stPlc.sMsg', 'Défaut');
+  check(w?.ok && plc.mem.toString('latin1', 14, 20) === 'Défaut', 'écriture STRING (Latin-1)');
+  w = await c.write('MAIN.stPlc.stSub.iX', 70000);
+  check(w && !w.ok && plc.mem.readInt16LE(64) === 7, 'valeur hors bornes refusée, automate inchangé');
+
+  c.clear();
+  w = await c.write('MAIN.stPlc.bRun', true);
+  const d = await c.waitFor((m) => m.t === 'd' && m.v.some((x, k) => k % 2 === 0 && x === leafOf(sch, 'MAIN.stPlc.nCount').i), 3000);
+  check(w?.ok && !!d, 'notifications : valeurs du procédé reçues en delta');
+
+  // passage en STOP puis RUN
+  plc.state = 6;
+  const stop = await c.waitFor((m) => m.t === 'status' && m.status.message.includes('STOP'), 3000);
+  check(stop?.status.state === 'error', 'automate en STOP signalé');
+  plc.state = 5;
+  check(!!(await c.waitFor((m) => m.t === 'status' && m.status.state === 'connected' && m.msgs !== 0 && !m.status.message.includes('STOP') && m !== st, 3000)), 'retour en RUN');
+
+  // nouveau programme : rechargement des symboles
+  c.clear();
+  plc.bumpVersion();
+  const reload = await c.waitFor((m) => m.t === 'schema' && m.schema.leaves.length === 12, 5000);
+  check(!!reload, 'nouveau programme détecté : symboles rechargés');
+
+  // coupure réseau : reconnexion automatique
+  await c.waitFor((m) => m.t === 'status' && m.status.state === 'connected', 3000);
+  c.clear();
+  plc.dropConnections();
+  const lost = await c.waitFor((m) => m.t === 'status' && m.status.state === 'error', 3000);
+  check(!!lost, `coupure détectée (${lost?.status.message})`);
+  const back = await c.waitFor((m) => m.t === 'status' && m.status.state === 'connected', 6000);
+  check(!!back, 'reconnexion automatique');
+  w = await c.write('MAIN.stPlc.rTemp', 12.5);
+  check(w?.ok && plc.mem.readFloatLE(4) === 12.5, 'écriture après reconnexion');
+
+  // configuration modifiée : symbole inconnu
+  c.clear();
+  let r = await fetch(s4.base + '/api/config', { method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'ads', ads: { symbols: ['MAIN.inconnu'], routerAddress: '127.0.0.1', routerTcpPort: plc.port, targetAmsNetId: '10.0.0.2.1.1', localAmsNetId: '10.0.0.9.1.1' } }) });
+  const bad = await c.waitFor((m) => m.t === 'status' && m.status.state === 'error' && m.status.message.includes('MAIN.inconnu'), 5000);
+  check(r.status === 200 && bad?.status.message.includes('symbole introuvable'), 'symbole inconnu : erreur explicite');
+
+  // AMS Net ID invalide
+  c.clear();
+  r = await fetch(s4.base + '/api/config', { method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'ads', ads: { targetAmsNetId: '10.0.0.2', symbols: ['MAIN.stPlc'] } }) });
+  const badid = await c.waitFor((m) => m.t === 'status' && m.status.state === 'error' && m.status.message.includes('AMS Net ID'), 3000);
+  check(!!badid, 'AMS Net ID invalide : erreur explicite');
+
+  // mode routeur : port AMS attribué par le routeur
+  c.clear();
+  const before = plc.registered;
+  r = await fetch(s4.base + '/api/config', { method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'ads', ads: { mode: 'router', targetAmsNetId: '10.0.0.2.1.1', routerAddress: '127.0.0.1', routerTcpPort: plc.port, symbols: ['MAIN.stPlc'] } }) });
+  const rt = await c.waitFor((m) => m.t === 'status' && m.status.state === 'connected', 5000);
+  check(!!rt && plc.registered === before + 1, 'mode routeur : port AMS enregistré');
+  c.ws.close();
+} finally {
+  const code = await stop(s4);
+  check(WIN ? code !== 'timeout' : code === 0, 'arrêt propre');
+  if (/runtime error|AddressSanitizer|LeakSanitizer/.test(s4.log())) { failures++; console.log(s4.log()); }
+  await plc.close();
 }
 
 console.log(`\n${checks} vérifications, ${failures} échec(s)`);

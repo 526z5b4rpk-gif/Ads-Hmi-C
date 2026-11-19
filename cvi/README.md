@@ -13,7 +13,7 @@ Le compilateur de CVI 2020 (basé sur clang) convient. Il suffit de créer un pr
 
 1. **File › New › Project** : enregistrer `hmi-service.prj` dans ce dossier `cvi/`.
 2. **Edit › Add Files to Project › Source (*.c)** : ajouter
-   - tous les fichiers de `src/` (`util.c plat.c types.c codec.c calc.c hub.c sim.c store.c http.c main.c`) ;
+   - tous les fichiers de `src/` (`util.c plat.c types.c codec.c calc.c hub.c sim.c ads.c store.c http.c main.c`) ;
    - `third_party/cjson/cJSON.c`.
    Les en-têtes sont trouvés automatiquement (les `#include` sont relatifs aux fichiers).
 3. **Edit › Add Files to Project › Library (*.lib)** : ajouter `ws2_32.lib` du SDK livré avec CVI :

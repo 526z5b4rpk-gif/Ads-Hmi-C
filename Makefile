@@ -29,7 +29,7 @@ LDLIBS  ?= -lpthread -lm
 HOST    := $(shell uname -s)
 endif
 
-SRC     := src/util.c src/plat.c src/types.c src/codec.c src/calc.c src/hub.c src/sim.c src/store.c src/http.c
+SRC     := src/util.c src/plat.c src/types.c src/codec.c src/calc.c src/hub.c src/sim.c src/ads.c src/store.c src/http.c
 CJSON   := third_party/cjson/cJSON.c
 BIN     := build/hmi-service$(EXE)
 TESTBIN := build/test_core$(EXE)

@@ -12,6 +12,9 @@
 #else
 #include <dirent.h>
 #include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -229,6 +232,77 @@ void plat_on_quit(void (*fn)(void))
 }
 
 #endif
+
+static int sock_errno(void)
+{
+#ifdef _WIN32
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
+sock_t tcp_connect(const char *host, int port, int timeout_ms, char *err, size_t cap)
+{
+    struct addrinfo hints, *res = NULL;
+    char ps[16];
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    snprintf(ps, sizeof ps, "%d", port);
+    int gai = getaddrinfo(host, ps, &hints, &res);
+    if (gai != 0 || !res) {
+        snprintf(err, cap, "adresse inconnue : %s", host);
+        return SOCK_INVALID;
+    }
+    sock_t fd = SOCK_INVALID;
+    int last = 0;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd == SOCK_INVALID) { last = sock_errno(); continue; }
+        if (sock_nonblock(fd) != 0) { last = sock_errno(); sock_close(fd); fd = SOCK_INVALID; continue; }
+        int rc = connect(fd, ai->ai_addr, (int)ai->ai_addrlen);
+        if (rc != 0) {
+            int e = sock_errno();
+#ifdef _WIN32
+            int pending = e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;
+#else
+            int pending = e == EINPROGRESS || e == EINTR;
+#endif
+            if (!pending) { last = e; sock_close(fd); fd = SOCK_INVALID; continue; }
+            struct pollfd p;
+            p.fd = fd;
+            p.events = POLLOUT;
+            p.revents = 0;
+            int pr = poll(&p, 1, timeout_ms);
+            int soerr = 0;
+            socklen_t sl = sizeof soerr;
+            if (pr <= 0) { last = -1; sock_close(fd); fd = SOCK_INVALID; continue; }
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&soerr, &sl) != 0 || soerr != 0) {
+                last = soerr ? soerr : sock_errno();
+                sock_close(fd);
+                fd = SOCK_INVALID;
+                continue;
+            }
+        }
+        break;
+    }
+    freeaddrinfo(res);
+    if (fd == SOCK_INVALID) {
+        if (last == -1) snprintf(err, cap, "pas de réponse de %s:%d (délai de %d ms dépassé)", host, port, timeout_ms);
+        else {
+#ifdef _WIN32
+            snprintf(err, cap, "connexion à %s:%d impossible (erreur Winsock %d)", host, port, last);
+#else
+            snprintf(err, cap, "connexion à %s:%d impossible : %s", host, port, strerror(last));
+#endif
+        }
+        return SOCK_INVALID;
+    }
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
+    return fd;
+}
 
 /* ------------------------------------------------------------- fichiers */
 

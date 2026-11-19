@@ -8,7 +8,7 @@ cd /d "%~dp0..\.."
 
 where gcc >nul 2>nul || (echo gcc introuvable : lancer deploy\windows\installer-dev.ps1 ou ajouter MinGW-w64 au PATH & exit /b 1)
 
-set SRC=src\util.c src\plat.c src\types.c src\codec.c src\calc.c src\hub.c src\sim.c src\store.c src\http.c third_party\cjson\cJSON.c
+set SRC=src\util.c src\plat.c src\types.c src\codec.c src\calc.c src\hub.c src\sim.c src\ads.c src\store.c src\http.c third_party\cjson\cJSON.c
 set WARN=-std=c99 -pedantic -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes -Wno-unused-parameter
 
 if not exist build mkdir build

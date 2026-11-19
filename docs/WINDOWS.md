@@ -54,7 +54,7 @@ Les fins de ligne sont gérées par `.gitattributes` : les `.bat` et `.ps1` sont
 
 ```bat
 deploy\windows\build.bat            &rem build\hmi-service.exe
-deploy\windows\build.bat test       &rem + 180 tests unitaires + 63 tests de bout en bout
+deploy\windows\build.bat test       &rem + tests unitaires et de bout en bout (faux automate ADS compris)
 deploy\windows\build.bat kit        &rem + dist\ads-hmi-<version>-windows.zip
 build\hmi-service.exe --data data --web web
 ```

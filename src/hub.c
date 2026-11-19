@@ -277,12 +277,16 @@ void hub_apply(hub_t *h, const cJSON *cfg)
     h->status_pending = 1;
     pm_unlock(&h->lock);
 
-    if (ads) {
-        hub_source_status(h, ST_ERROR, "Source ADS pas encore disponible dans cette version : utiliser le simulateur");
-        return;
-    }
-    h->source = sim_new(h, cycle);
     char err[256] = "";
+    if (ads) {
+        h->source = ads_new(h, obj(cfg, "ads"), err, sizeof err);
+        if (!h->source) {
+            hub_source_status(h, ST_ERROR, err);
+            return;
+        }
+    } else {
+        h->source = sim_new(h, cycle);
+    }
     if (h->source->start(h->source, err, sizeof err) != 0) {
         h->source->destroy(h->source);
         h->source = NULL;

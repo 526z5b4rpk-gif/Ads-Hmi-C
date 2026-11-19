@@ -89,6 +89,11 @@ void sock_close(sock_t s);
 int sock_nonblock(sock_t s);
 /** la dernière opération a échoué parce qu'elle aurait bloqué (EAGAIN / WSAEWOULDBLOCK) */
 int sock_would_block(void);
+/**
+ * Connexion TCP sortante (client), au plus `timeout_ms`. Socket renvoyée non bloquante, TCP_NODELAY.
+ * SOCK_INVALID en cas d'échec, message dans err.
+ */
+sock_t tcp_connect(const char *host, int port, int timeout_ms, char *err, size_t cap);
 
 /* ------------------------------------------------------------- fichiers */
 
