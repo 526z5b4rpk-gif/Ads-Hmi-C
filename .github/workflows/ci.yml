@@ -1,0 +1,63 @@
+# Intégration continue : tests sous Linux (sanitizers) et sous Windows (gcc MinGW-w64, vrai Windows).
+# Un tag v* (ex. v0.1.0) publie en plus le kit Windows en Release GitHub.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: make test
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: gcc MinGW-w64 dans le PATH
+        shell: pwsh
+        run: echo "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin" >> $env:GITHUB_PATH
+      - name: Compilation + tests unitaires + bout en bout
+        shell: cmd
+        run: deploy\windows\build.bat test
+      - name: Kit de déploiement
+        shell: cmd
+        run: deploy\windows\package.bat build\hmi-service.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ads-hmi-windows
+          path: dist/*.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: ads-hmi-windows, path: dist }
+      - run: cd dist && sha256sum *.zip > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt

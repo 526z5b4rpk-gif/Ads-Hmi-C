@@ -1,0 +1,5 @@
+# scripts Windows : fins de ligne CRLF obligatoires pour cmd.exe
+*.bat text eol=crlf
+deploy/windows/LISEZMOI.txt text eol=crlf
+*.sh text eol=lf
+*.ps1 text eol=crlf

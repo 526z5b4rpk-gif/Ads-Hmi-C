@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Variables calculées</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #667085; --line: #d9dde5;
+    --accent: #2563eb; --accent-text: #ffffff; --ok: #15803d; --err: #b42318; --err-bg: #fef3f2;
+    --warn: #b54708; --input: #ffffff; --code: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151c; --panel: #1b1f29; --text: #e6e9ef; --muted: #98a2b3; --line: #2e3442;
+      --accent: #4f8cff; --accent-text: #0b1020; --ok: #4ade80; --err: #f97066; --err-bg: #3a1a1a;
+      --warn: #fdb022; --input: #141821; --code: #232937;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  #conn { font-size: 12px; color: var(--muted); }
+  #conn.ok::before { content: "● "; color: var(--ok); }
+  #conn.ko::before { content: "● "; color: var(--err); }
+  .spacer { flex: 1; }
+  button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.icon { padding: 2px 7px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; padding: 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  #msg { margin: 0 16px; padding: 8px 12px; border-radius: 6px; display: none; }
+  #msg.err { display: block; background: var(--err-bg); color: var(--err); }
+  #msg.ok { display: block; color: var(--ok); }
+  .calc { border-bottom: 1px solid var(--line); padding: 12px; display: grid; gap: 8px; grid-template-columns: 1fr auto; }
+  .calc:last-child { border-bottom: 0; }
+  .calc .fields { display: grid; gap: 8px; grid-template-columns: 180px 110px 90px minmax(0, 1fr); }
+  @media (max-width: 700px) { .calc .fields { grid-template-columns: 1fr 1fr; } }
+  .calc .tools { display: flex; flex-direction: column; gap: 4px; }
+  label { display: grid; gap: 2px; font-size: 11px; color: var(--muted); }
+  input, select, textarea { font: inherit; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: 5px; padding: 5px 7px; width: 100%; }
+  textarea { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 13px; resize: vertical; min-height: 34px; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .expr { grid-column: 1 / -1; }
+  .status { grid-column: 1 / -1; display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
+  .path { font-family: ui-monospace, Consolas, monospace; color: var(--muted); font-size: 12px; }
+  .value { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .error { color: var(--err); }
+  .test { color: var(--muted); }
+  .empty { padding: 24px; text-align: center; color: var(--muted); }
+  aside { display: flex; flex-direction: column; max-height: calc(100vh - 90px); position: sticky; top: 16px; }
+  aside h2 { font-size: 13px; margin: 0; padding: 10px 12px 6px; }
+  aside .hint { font-size: 12px; color: var(--muted); padding: 0 12px 8px; margin: 0; }
+  aside input { margin: 0 12px 8px; width: auto; }
+  #vars { overflow: auto; flex: 1; border-top: 1px solid var(--line); }
+  .var { display: flex; justify-content: space-between; gap: 8px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+  .var:hover { background: var(--code); }
+  .var span:first-child { font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+  .var span:last-child { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  details { margin: 0 16px 16px; }
+  details .panel { padding: 4px 16px; }
+  summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  table.help { border-collapse: collapse; margin: 8px 0; }
+  table.help td { padding: 3px 12px 3px 0; vertical-align: top; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Variables calculées</h1>
+  <span id="conn" class="ko">connexion…</span>
+  <span class="spacer"></span>
+  <button id="add">+ Ajouter</button>
+  <button id="revert" disabled>Annuler les modifications</button>
+  <button id="save" class="primary" disabled>Enregistrer</button>
+</header>
+<p id="msg"></p>
+<main>
+  <section class="panel" id="list"></section>
+  <aside class="panel">
+    <h2>Variables disponibles</h2>
+    <p class="hint">Clic : insère le chemin dans l'expression en cours d'édition.</p>
+    <input id="filter" type="search" placeholder="Filtrer…" aria-label="Filtrer les variables">
+    <div id="vars"></div>
+  </aside>
+</main>
+<details>
+  <summary>Aide : syntaxe des expressions</summary>
+  <div class="panel">
+    <p>Une variable calculée est recalculée par le service à chaque changement des variables qu'elle utilise,
+      puis apparaît dans l'éditeur d'écrans sous <code>CALC.&lt;nom&gt;</code>, utilisable par tous les widgets (lecture seule).</p>
+    <table class="help">
+      <tr><td>Variables</td><td><code>SIM.stHmi.rTemperature</code> <code>SIM.stHmi.aTemp[3]</code> ; nom court = variable calculée définie <b>au-dessus</b> (<code>rTempMoyenne</code>)</td></tr>
+      <tr><td>Nombres</td><td><code>12</code> <code>3.5</code> <code>1e-3</code> <code>TRUE</code> <code>FALSE</code> <code>PI</code></td></tr>
+      <tr><td>Calcul</td><td><code>+ - * /</code> <code>%</code> ou <code>MOD</code> <code>^</code> (puissance) <code>( )</code></td></tr>
+      <tr><td>Comparaison</td><td><code>&lt; &lt;= &gt; &gt;=</code> <code>=</code> <code>&lt;&gt;</code> (ou <code>==</code> <code>!=</code>)</td></tr>
+      <tr><td>Logique</td><td><code>NOT</code> <code>AND</code> <code>OR</code> <code>XOR</code> (ou <code>! &amp;&amp; ||</code>)</td></tr>
+      <tr><td>Condition</td><td><code>c ? a : b</code> ou <code>if(c, a, b)</code></td></tr>
+      <tr><td>Fonctions</td><td><code>abs sqrt exp ln log10 sin cos tan floor ceil trunc sign</code><br>
+        <code>round(x)</code> <code>round(x, décimales)</code> <code>pow(a, b)</code> <code>bit(mot, n)</code><br>
+        <code>min(…)</code> <code>max(…)</code> <code>sum(…)</code> <code>avg(…)</code> <code>clamp(x, mini, maxi)</code> <code>limit(mini, x, maxi)</code></td></tr>
+      <tr><td>Type</td><td>auto : BOOL si l'expression est une comparaison ou une opération logique, sinon LREAL</td></tr>
+      <tr><td>Valeur absente</td><td>source déconnectée, variable inconnue, division par zéro… : la valeur est affichée comme absente
+        (BOOL : FAUX, entiers : 0)</td></tr>
+    </table>
+  </div>
+</details>
+
+<script type="module">
+// Page autonome en JavaScript pur : API REST /api/calc et WebSocket /ws (valeurs en direct).
+const $ = (s) => document.querySelector(s);
+const TYPES = ['auto', 'BOOL', 'INT', 'DINT', 'REAL', 'LREAL'];
+
+let saved = [];        // définitions enregistrées (référence pour « modifié »)
+let rows = [];         // définitions en cours d'édition : {name, expr, type, unit, comment}
+let serverInfo = {};   // nom (minuscules) -> {value, plcType, error} renvoyés par l'API
+let lastExpr = null;   // dernier champ expression actif (insertion depuis la liste des variables)
+const live = { leaves: [], values: [], byPath: new Map() };
+
+/* ------------------------------------------------------------ outils */
+
+function el(tag, props = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k in e) e[k] = v;
+    else e.setAttribute(k, v);
+  }
+  for (const c of children) if (c != null) e.append(c);
+  return e;
+}
+
+function fmt(v) {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'boolean') return v ? 'VRAI' : 'FAUX';
+  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toLocaleString('fr-FR', { maximumFractionDigits: 3 });
+  return String(v);
+}
+
+function message(text, ok = false) {
+  const m = $('#msg');
+  m.textContent = text || '';
+  m.className = text ? (ok ? 'ok' : 'err') : '';
+}
+
+const clean = (r) => {
+  const o = { name: r.name.trim(), expr: r.expr.trim(), type: r.type || 'auto' };
+  if (r.unit && r.unit.trim()) o.unit = r.unit.trim();
+  if (r.comment && r.comment.trim()) o.comment = r.comment.trim();
+  return o;
+};
+const dirty = () => JSON.stringify(rows.map(clean)) !== JSON.stringify(saved.map(clean));
+
+function refreshButtons() {
+  const d = dirty();
+  $('#save').disabled = !d;
+  $('#revert').disabled = !d;
+  document.title = (d ? '● ' : '') + 'Variables calculées';
+}
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
+  return data;
+}
+
+/* ------------------------------------------------------------ chargement / enregistrement */
+
+function takeServer(data) {
+  saved = data.variables.map((v) => ({ name: v.name, expr: v.expr, type: v.type, unit: v.unit || '', comment: v.comment || '' }));
+  serverInfo = {};
+  for (const v of data.variables) serverInfo[v.name.toLowerCase()] = v;
+}
+
+async function load() {
+  try {
+    takeServer(await api('GET', '/api/calc'));
+    rows = saved.map((r) => ({ ...r }));
+    render();
+  } catch (e) {
+    message('Lecture impossible : ' + e.message);
+  }
+}
+
+async function save() {
+  try {
+    takeServer(await api('PUT', '/api/calc', { variables: rows.map(clean) }));
+    rows = saved.map((r) => ({ ...r }));
+    render();
+    message('Enregistré : variables disponibles dans l\'éditeur d\'écrans sous CALC.', true);
+    setTimeout(() => { if ($('#msg').className === 'ok') message(''); }, 4000);
+  } catch (e) {
+    message('Non enregistré : ' + e.message);
+  }
+}
+
+/* ------------------------------------------------------------ rendu */
+
+function render() {
+  const list = $('#list');
+  list.replaceChildren();
+  if (!rows.length) {
+    list.append(el('div', { class: 'empty' }, 'Aucune variable calculée. « + Ajouter » pour en créer une.'));
+  }
+  rows.forEach((r, i) => list.append(renderRow(r, i)));
+  refreshButtons();
+  updateValues();
+}
+
+function renderRow(r, i) {
+  const value = el('span', { class: 'value' });
+  const error = el('span', { class: 'error' });
+  const test = el('span', { class: 'test' });
+  const path = el('span', { class: 'path' });
+  const changed = () => { refreshButtons(); path.textContent = 'CALC.' + (r.name.trim() || '?'); };
+
+  const input = (key, props) => el('input', { value: r[key] || '', ...props, oninput: (e) => { r[key] = e.target.value; changed(); } });
+  const expr = el('textarea', {
+    value: r.expr, rows: 1, spellcheck: false, placeholder: 'ex. SIM.stHmi.rNiveau / 100 * 2500',
+    oninput: (e) => { r.expr = e.target.value; changed(); autosize(e.target); },
+    onfocus: (e) => { lastExpr = { area: e.target, row: r }; },
+  });
+  const type = el('select', { onchange: (e) => { r.type = e.target.value; changed(); } },
+    ...TYPES.map((t) => el('option', { value: t, selected: t === (r.type || 'auto') }, t)));
+
+  const row = el('div', { class: 'calc' },
+    el('div', { class: 'fields' },
+      el('label', {}, 'Nom', input('name', { placeholder: 'rVolumeCuve', spellcheck: false })),
+      el('label', {}, 'Type', type),
+      el('label', {}, 'Unité', input('unit', { placeholder: 'L' })),
+      el('label', {}, 'Commentaire (libellé par défaut des widgets)', input('comment', { placeholder: 'Volume de la cuve' })),
+      el('label', { class: 'expr' }, 'Expression', expr),
+      el('div', { class: 'status' }, path, value, error, test)),
+    el('div', { class: 'tools' },
+      el('button', { class: 'icon', title: 'Monter', disabled: i === 0, onclick: () => move(i, -1) }, '↑'),
+      el('button', { class: 'icon', title: 'Descendre', disabled: i === rows.length - 1, onclick: () => move(i, 1) }, '↓'),
+      el('button', { class: 'icon', title: 'Tester l\'expression sur les valeurs actuelles', onclick: () => runTest(r, test) }, '▶'),
+      el('button', { class: 'icon', title: 'Supprimer', onclick: () => { rows.splice(i, 1); render(); } }, '✕')));
+  row._refs = { r, value, error };
+  changed();
+  requestAnimationFrame(() => autosize(expr));
+  return row;
+}
+
+function autosize(t) { t.style.height = 'auto'; t.style.height = t.scrollHeight + 2 + 'px'; }
+
+function move(i, d) {
+  const [r] = rows.splice(i, 1);
+  rows.splice(i + d, 0, r);
+  render();
+}
+
+async function runTest(r, out) {
+  out.textContent = '…';
+  try {
+    const res = await api('POST', '/api/calc/test', { expr: r.expr });
+    out.className = res.error ? 'error' : 'test';
+    out.textContent = res.error && res.value === undefined
+      ? 'Test : ' + res.error
+      : `Test : ${fmt(res.value)} (${res.type})${res.error ? ' — ' + res.error : ''}`;
+  } catch (e) {
+    out.className = 'error';
+    out.textContent = 'Test : ' + e.message;
+  }
+}
+
+/** valeur en direct (WebSocket) et erreur de résolution (API) de chaque ligne enregistrée */
+function updateValues() {
+  for (const row of $('#list').children) {
+    if (!row._refs) continue;
+    const { r, value, error } = row._refs;
+    const isSaved = saved.some((s) => s.name.toLowerCase() === r.name.trim().toLowerCase());
+    const i = live.byPath.get(('CALC.' + r.name.trim()).toLowerCase());
+    value.textContent = isSaved && i !== undefined ? '= ' + fmt(live.values[i]) + (r.unit ? ' ' + r.unit : '') : '';
+    const info = serverInfo[r.name.trim().toLowerCase()];
+    error.textContent = isSaved && info && info.error ? info.error : '';
+  }
+}
+
+/* ------------------------------------------------------------ liste des variables */
+
+function renderVars() {
+  const f = $('#filter').value.trim().toLowerCase();
+  const box = $('#vars');
+  box.replaceChildren();
+  let shown = 0;
+  for (const l of live.leaves) {
+    if (f && !l.path.toLowerCase().includes(f) && !(l.comment || '').toLowerCase().includes(f)) continue;
+    if (++shown > 500) break;
+    const val = el('span');
+    val.dataset.i = l.i;
+    val.textContent = fmt(live.values[l.i]);
+    box.append(el('div', { class: 'var', title: [l.type, l.comment].filter(Boolean).join(' — '), onclick: () => insert(l.path) },
+      el('span', {}, l.path), val));
+  }
+  if (!shown) box.append(el('div', { class: 'empty' }, live.leaves.length ? 'Aucune variable' : 'En attente du schéma…'));
+}
+
+function insert(path) {
+  if (!lastExpr || !document.body.contains(lastExpr.area)) { message('Cliquer d\'abord dans une expression.'); return; }
+  const { area, row } = lastExpr;
+  // une variable calculée s'écrit par son nom court
+  const text = path.toUpperCase().startsWith('CALC.') ? path.slice(5) : path;
+  const s = area.selectionStart ?? area.value.length, e = area.selectionEnd ?? s;
+  area.value = area.value.slice(0, s) + text + area.value.slice(e);
+  area.selectionStart = area.selectionEnd = s + text.length;
+  row.expr = area.value;
+  area.focus();
+  autosize(area);
+  refreshButtons();
+}
+
+/* ------------------------------------------------------------ temps réel */
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  ws.onopen = () => { $('#conn').textContent = 'connecté'; $('#conn').className = 'ok'; };
+  ws.onclose = () => {
+    $('#conn').textContent = 'déconnecté, nouvelle tentative…';
+    $('#conn').className = 'ko';
+    setTimeout(connect, 2000);
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.t === 'schema') {
+      live.leaves = m.schema.leaves;
+      live.values = m.values;
+      live.byPath = new Map(live.leaves.map((l) => [l.path.toLowerCase(), l.i]));
+      renderVars();
+      updateValues();
+      // nouveau schéma (enregistrement, reconnexion de la source) : erreurs de résolution à jour
+      api('GET', '/api/calc').then((d) => { serverInfo = {}; for (const v of d.variables) serverInfo[v.name.toLowerCase()] = v; updateValues(); }).catch(() => {});
+    } else if (m.t === 'd') {
+      for (let k = 0; k < m.v.length; k += 2) live.values[m.v[k]] = m.v[k + 1];
+      scheduleRefresh();
+    } else if (m.t === 'status') {
+      const s = m.status;
+      $('#conn').textContent = `${s.source === 'ads' ? 'ADS' : 'Simulateur'} · ${s.state}${s.message ? ' · ' + s.message : ''}`;
+      $('#conn').className = s.state === 'connected' ? 'ok' : 'ko';
+    }
+  };
+}
+
+// au plus 5 rafraîchissements par seconde : lisible, et sans coût pour une liste longue
+let refreshTimer = 0;
+function scheduleRefresh() {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = 0;
+    updateValues();
+    for (const s of $('#vars').querySelectorAll('span[data-i]')) s.textContent = fmt(live.values[s.dataset.i]);
+  }, 200);
+}
+
+/* ------------------------------------------------------------ démarrage */
+
+$('#add').onclick = () => {
+  rows.push({ name: '', expr: '', type: 'auto', unit: '', comment: '' });
+  render();
+  const last = $('#list').lastElementChild;
+  last.querySelector('input').focus();
+  last.scrollIntoView({ block: 'nearest' });
+};
+$('#save').onclick = save;
+$('#revert').onclick = () => { rows = saved.map((r) => ({ ...r })); message(''); render(); };
+$('#filter').oninput = renderVars;
+window.addEventListener('beforeunload', (e) => { if (dirty()) e.preventDefault(); });
+
+load();
+connect();
+</script>
+</body>
+</html>

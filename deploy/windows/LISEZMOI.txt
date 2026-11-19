@@ -1,0 +1,53 @@
+ADS HMI - kit de déploiement Windows
+=====================================
+
+Contenu
+-------
+  hmi-service.exe                 service temps réel (aucune installation, aucun droit administrateur)
+  web\                            interface affichée par le navigateur
+  data\dashboards\                écrans (un fichier .json par écran) - à sauvegarder
+  data\calculs.json               variables calculées (page /calculs.html) - à sauvegarder
+  data\config.json                connexion (créé au premier « Appliquer » ; absent = simulateur)
+  logs\                           journal du service quand il est lancé par kiosque.bat
+  parametres.bat                  port, adresse d'écoute, écran affiché : SEUL fichier à modifier
+  demarrer.bat                    lance le service dans une console (mise en service, diagnostic)
+  kiosque.bat                     poste opérateur : service + Edge en plein écran sur l'écran choisi
+  arreter.bat                     arrête le service
+  demarrage-auto-installer.bat    lance kiosque.bat à l'ouverture de session
+  demarrage-auto-supprimer.bat    annule le démarrage automatique
+
+Prérequis
+---------
+  - Windows 10 (1803 ou plus récent) ou Windows 11, 64 bits. Edge et curl.exe sont fournis avec Windows.
+  - Si hmi-service.exe a été compilé avec LabWindows/CVI : le « LabWindows/CVI Runtime » de la même
+    version (ex. 2020), gratuit, doit être installé sur le poste. Il est déjà présent si un autre
+    programme CVI y tourne. Sans lui, Windows signale l'absence de cvirte.dll au lancement.
+    (Un exécutable compilé avec MinGW ou Visual Studio n'a pas ce prérequis.)
+
+Mise en service
+---------------
+  1. Copier le dossier sur le poste, dans un chemin sans accent (ex. C:\ADS-HMI).
+  2. Double-cliquer demarrer.bat, puis ouvrir dans Edge :
+        http://127.0.0.1:8080/#/edit/demo     (éditeur)
+        http://127.0.0.1:8080/#/run/demo      (exécution)
+     Au premier lancement, Windows peut demander l'autorisation du pare-feu : la refuser
+     si l'écoute reste locale (127.0.0.1, réglage par défaut).
+  3. Régler la connexion dans l'éditeur (Configuration) puis créer les écrans.
+  4. Fermer la console, choisir l'écran dans parametres.bat (ECRAN=...), lancer kiosque.bat.
+  5. Poste opérateur : exécuter demarrage-auto-installer.bat (avec la session de l'opérateur).
+
+Exploitation
+------------
+  - Port déjà utilisé : le service s'arrête avec un message ; changer PORT dans parametres.bat.
+  - Journal : logs\hmi-service.log (limité à environ 10 Mo, le précédent est gardé en .log.1).
+  - Sauvegarde : le dossier data\ suffit (écrans, variables calculées, configuration).
+  - Mise à jour : remplacer hmi-service.exe et web\ ; ne pas toucher à data\.
+  - config.json illisible (fichier abîmé) : le service démarre sans connexion, garde une copie
+    config.json.illisible-<date> et l'interface affiche l'erreur ; « Appliquer » une configuration
+    la remplace.
+  - Quitter le mode kiosque : Alt+F4 (Edge), puis arreter.bat si nécessaire.
+
+Sécurité
+--------
+  Par défaut le service n'écoute que ce poste (127.0.0.1). HOTE=0.0.0.0 le rend accessible depuis le
+  réseau SANS authentification (pas encore implémentée) : réseau machine isolé uniquement.

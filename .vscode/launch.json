@@ -1,0 +1,27 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Déboguer hmi-service (gdb, Windows)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/hmi-service.exe",
+      "args": ["--data", "data", "--web", "web"],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb.exe",
+      "externalConsole": false,
+      "preLaunchTask": "Compiler"
+    },
+    {
+      "name": "Déboguer hmi-service (lldb, macOS)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/hmi-service",
+      "args": ["--data", "data", "--web", "web"],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "lldb",
+      "preLaunchTask": "Compiler"
+    }
+  ]
+}

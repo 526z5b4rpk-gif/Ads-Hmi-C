@@ -1,0 +1,21 @@
+# Modèle d'unité systemd, complété par installer-service.sh (@DIR@, @USER@, @HOTE@, @PORT@)
+[Unit]
+Description=ADS HMI - service temps reel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/hmi-service --data @DIR@/data --web @DIR@/web --host @HOTE@ --port @PORT@
+Restart=on-failure
+RestartSec=2
+# durcissement : seul le dossier data est modifiable
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@DIR@/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

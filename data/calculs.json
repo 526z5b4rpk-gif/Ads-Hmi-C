@@ -1,0 +1,11 @@
+{"variables":[
+{"name":"rTempMoyenne","expr":"avg(SIM.stHmi.aTemp[1], SIM.stHmi.aTemp[2], SIM.stHmi.aTemp[3], SIM.stHmi.aTemp[4], SIM.stHmi.aTemp[5], SIM.stHmi.aTemp[6], SIM.stHmi.aTemp[7], SIM.stHmi.aTemp[8])","type":"REAL","unit":"°C","comment":"Température moyenne des 8 zones"},
+{"name":"rEcartZones","expr":"max(SIM.stHmi.aTemp[1], SIM.stHmi.aTemp[2], SIM.stHmi.aTemp[3], SIM.stHmi.aTemp[4], SIM.stHmi.aTemp[5], SIM.stHmi.aTemp[6], SIM.stHmi.aTemp[7], SIM.stHmi.aTemp[8]) - min(SIM.stHmi.aTemp[1], SIM.stHmi.aTemp[2], SIM.stHmi.aTemp[3], SIM.stHmi.aTemp[4], SIM.stHmi.aTemp[5], SIM.stHmi.aTemp[6], SIM.stHmi.aTemp[7], SIM.stHmi.aTemp[8])","type":"REAL","unit":"°C","comment":"Écart entre zone la plus chaude et la plus froide"},
+{"name":"bSurchauffe","expr":"rTempMoyenne > SIM.stHmi.stCmd.rConsigneTemp + 5","comment":"Moyenne > consigne + 5 °C"},
+{"name":"rEcartVitesse","expr":"round(SIM.stHmi.rVitesse - SIM.stHmi.stCmd.rConsigneVitesse, 1)","unit":"m/min","comment":"Écart vitesse / consigne"},
+{"name":"rVolumeCuve","expr":"SIM.stHmi.rNiveau / 100 * 2500","unit":"L","comment":"Volume de la cuve (2 500 L)"},
+{"name":"rPuissancePresse","expr":"abs(SIM.stHmi.stPresse.rForce * SIM.stHmi.aAxes[0].rVel) / 1000","unit":"kW","comment":"Puissance mécanique de la presse"},
+{"name":"nAxesPrets","expr":"SIM.stHmi.aAxes[0].bReady + SIM.stHmi.aAxes[1].bReady + SIM.stHmi.aAxes[2].bReady","type":"INT","comment":"Nombre d'axes prêts"},
+{"name":"bDefautPompe","expr":"bit(SIM.stHmi.wDefauts, 0)","comment":"Défaut pompe (bit 0 du mot de défauts)"},
+{"name":"bProductionOk","expr":"SIM.stHmi.bRun AND NOT SIM.stHmi.bAlarm AND nAxesPrets = 3","comment":"Production en cours, sans alarme, axes prêts"}
+]}

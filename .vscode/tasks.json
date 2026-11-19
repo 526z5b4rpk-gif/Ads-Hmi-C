@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Compiler",
+      "type": "shell",
+      "command": "make",
+      "windows": { "command": "deploy\\windows\\build.bat" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Tests (unitaires + bout en bout)",
+      "type": "shell",
+      "command": "make test",
+      "windows": { "command": "deploy\\windows\\build.bat test" },
+      "group": "test",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Lancer le service (http://127.0.0.1:8080)",
+      "type": "shell",
+      "command": "make run",
+      "windows": { "command": "deploy\\windows\\build.bat && build\\hmi-service.exe --data data --web web" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Kit Windows (zip)",
+      "type": "shell",
+      "command": "make dist-windows",
+      "windows": { "command": "deploy\\windows\\build.bat kit" },
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}

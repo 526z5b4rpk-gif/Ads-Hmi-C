@@ -1,0 +1,7 @@
+build/
+*.dSYM/
+.DS_Store
+data/config.json
+data/config.json.illisible-*
+*.tmp
+dist/

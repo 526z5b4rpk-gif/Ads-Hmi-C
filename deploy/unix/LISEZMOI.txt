@@ -1,0 +1,42 @@
+ADS HMI - kit de déploiement Linux / macOS
+==========================================
+
+Contenu
+-------
+  hmi-service               service temps réel (exécutable autonome, ~150 Ko)
+  web/                      interface affichée par le navigateur
+  data/dashboards/          écrans (un fichier .json par écran) - à sauvegarder
+  data/calculs.json         variables calculées (page /calculs.html) - à sauvegarder
+  data/config.json          connexion (créé au premier « Appliquer » ; absent = simulateur)
+  logs/                     journal quand le service est lancé par kiosque.sh
+  parametres.sh             port, adresse d'écoute, écran affiché : SEUL fichier à modifier
+  demarrer.sh               lance le service au premier plan (mise en service, diagnostic)
+  kiosque.sh                poste opérateur : service + Chromium en plein écran
+  arreter.sh                arrête le service lancé par kiosque.sh
+  installer-service.sh      Linux : service systemd « ads-hmi » (démarrage au boot, relance auto)
+  desinstaller-service.sh   Linux : supprime ce service
+
+L'exécutable est propre au système et au processeur indiqués dans le nom du kit
+(ex. linux-x86_64, linux-aarch64 pour un Raspberry Pi 64 bits). Pour une autre cible :
+recompiler depuis les sources avec « make » puis « deploy/package.sh » sur cette cible.
+
+Mise en service
+---------------
+  1. Copier et décompresser le kit, ex. dans /opt/ads-hmi (chemin sans espace).
+  2. ./demarrer.sh puis ouvrir http://127.0.0.1:8080/#/edit/demo
+  3. Régler la connexion (Configuration), créer les écrans, arrêter avec Ctrl+C.
+  4. Choisir l'écran dans parametres.sh (ECRAN=...).
+  5. Linux, service permanent : sudo ./installer-service.sh
+     Poste opérateur : lancer kiosque.sh à l'ouverture de session (applications au démarrage du bureau).
+
+Exploitation
+------------
+  - Port déjà utilisé : le service s'arrête avec un message ; changer PORT dans parametres.sh.
+  - Journal : journalctl -u ads-hmi -f (service systemd) ou logs/hmi-service.log (kiosque.sh).
+  - Sauvegarde : le dossier data/ suffit. Mise à jour : remplacer hmi-service et web/.
+  - Avec le service systemd, seul data/ est modifiable par le service (durcissement systemd).
+
+Sécurité
+--------
+  Par défaut le service n'écoute que ce poste (127.0.0.1). HOTE=0.0.0.0 le rend accessible depuis le
+  réseau SANS authentification (pas encore implémentée) : réseau machine isolé uniquement.
