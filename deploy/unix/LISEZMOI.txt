@@ -9,9 +9,9 @@ Contenu
   data/calculs.json         variables calculées (page /calculs.html) - à sauvegarder
   data/config.json          connexion (créé au premier « Appliquer » ; absent = simulateur)
   logs/                     journal quand le service est lancé par kiosque.sh
-  parametres.sh             port, adresse d'écoute, écran affiché : SEUL fichier à modifier
+  parametres.sh             port, adresse d'écoute, écran affiché, jeton : SEUL fichier à modifier
   demarrer.sh               lance le service au premier plan (mise en service, diagnostic)
-  kiosque.sh                poste opérateur : service + Chromium en plein écran
+  kiosque.sh                poste opérateur : service + Chromium en plein écran (« Quitter » arrête tout)
   arreter.sh                arrête le service lancé par kiosque.sh
   installer-service.sh      Linux : service systemd « ads-hmi » (démarrage au boot, relance auto)
   desinstaller-service.sh   Linux : supprime ce service
@@ -39,4 +39,7 @@ Exploitation
 Sécurité
 --------
   Par défaut le service n'écoute que ce poste (127.0.0.1). HOTE=0.0.0.0 le rend accessible depuis le
-  réseau SANS authentification (pas encore implémentée) : réseau machine isolé uniquement.
+  réseau : les autres postes voient les écrans en LECTURE SEULE. Pour leur donner tous les droits,
+  définir JETON dans parametres.sh puis ouvrir une fois http://<ce-pc>:8080/?token=<jeton> sur le poste
+  distant. Le jeton circule en clair (HTTP) : réseau machine de confiance uniquement.
+  Lecture seule pour tous : ajouter --readonly à la ligne de commande.

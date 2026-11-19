@@ -5,7 +5,7 @@ IHM temps réel pour automates Beckhoff (ADS). Deux parties indépendantes :
 | Partie | Langage | Rôle |
 |---|---|---|
 | **Service** (`src/`) | C99, sans dépendance hors cJSON (compilable avec LabWindows/CVI 2020, MinGW, gcc, clang) | source de données (automate Beckhoff en ADS, ou simulateur), détection des changements, serveur HTTP + WebSocket, écrans et configuration |
-| **Interface** (`web/`) | HTML/CSS/JS compilés (sources TypeScript + React dans le projet `ads-hmi-studio`) ; `calculs.html` en JavaScript pur | affichage, éditeur d'écrans, édition des variables calculées ; aucune logique automate |
+| **Interface** (`web/`) | HTML/CSS/JS compilés (sources TypeScript + React dans le projet `ads-hmi-studio`) ; `calculs.html` et `kiosk.js` (bouton « Quitter », badge « Lecture seule ») en JavaScript pur, chargés par `index.html` à conserver si le front est recompilé | affichage, éditeur d'écrans, édition des variables calculées ; aucune logique automate |
 
 Le service parle exactement le même protocole que le serveur Node de `ads-hmi-studio` : le front web existant
 fonctionne sans modification, et n'importe quel autre front (JavaScript pur, autre framework) peut s'y brancher.
@@ -25,15 +25,25 @@ make run             # http://127.0.0.1:8080
 Options :
 
 ```
---data <dossier>   écrans et configuration (défaut : data)
---web <dossier>    front web compilé (défaut : web)
---host <adresse>   adresse d'écoute (défaut : 127.0.0.1 ; 0.0.0.0 = accessible depuis le réseau)
---port <port>      port HTTP (défaut : 8080)
+--data <dossier>     écrans et configuration (défaut : data)
+--web <dossier>      front web compilé (défaut : web)
+--host <adresse>     adresse d'écoute (défaut : 127.0.0.1 ; 0.0.0.0 = accessible depuis le réseau)
+--port <port>        port HTTP (défaut : 8080)
+--kiosk              ouvre le navigateur (Edge, Chrome, Chromium) en plein écran ; arrêt du service
+                     quand le navigateur est fermé ou par le bouton « Quitter »
+--screen <écran>     écran affiché en kiosque (défaut : liste des écrans)
+--browser <chemin>   navigateur à utiliser (défaut : recherche automatique)
+--quit               autorise le bouton « Quitter » sans --kiosk
+--token <secret>     jeton exigé des postes distants pour modifier (ou variable HMI_TOKEN)
+--readonly           lecture seule pour tous les clients
 ```
 
 Pages : `http://127.0.0.1:8080/#/edit/demo` (éditeur), `http://127.0.0.1:8080/#/run/demo` (exécution),
 `http://127.0.0.1:8080/calculs.html` (variables calculées).
-Pour un poste opérateur : `chromium --kiosk http://127.0.0.1:8080/#/run/demo` (ou Edge en mode kiosque sous Windows).
+Poste opérateur : `hmi-service --kiosk --screen demo` ouvre l'écran en plein écran dans un profil de navigateur dédié.
+Le bouton « Quitter » (en haut à droite en mode exécution, script `web/kiosk.js`) ou la fermeture du navigateur
+arrête le service ; son **code de retour** (0, ou le code passé à `POST /api/quit {"code":N}`) permet à un programme
+appelant (banc de test, superviseur) de lancer l'IHM puis d'attendre sa fermeture.
 
 Windows : voir **[docs/WINDOWS.md](docs/WINDOWS.md)** (installation du kit, environnement de développement,
 release). En bref : `deploy\windows\build.bat test` sous Windows avec gcc MinGW-w64, ou `make windows` /
@@ -113,7 +123,8 @@ make test            # unitaires (UBSan ; ASan sous Linux ; fuites contrôlées 
 - `tests/e2e.mjs` : API REST, front, WebSocket (schéma, deltas, écritures, boucle commande → retour),
   écrans, changement de configuration, 20 clients simultanés, protections, `config.json` illisible,
   source ADS contre un faux automate (`tests/fake-plc.mjs`, format validé avec la bibliothèque ads-client) :
-  types, écritures, STOP, nouveau programme, coupure et reconnexion, mode routeur.
+  types, écritures, STOP, nouveau programme, coupure et reconnexion, mode routeur ; bouton « Quitter » et
+  code de retour, lecture seule, jeton d'accès depuis une adresse réseau réelle, kiosque (faux navigateur).
 
 ## Architecture du service
 
@@ -153,17 +164,24 @@ Navigateur → serveur : `{"t":"w","id":1,"path":"SIM.stHmi.stCmd.bMarche","valu
 - En écoute locale, l'en-tête `Host` doit désigner la machine locale (protection contre le « DNS rebinding »).
 - Écritures (API et WebSocket) refusées si elles viennent d'une autre origine : une page web malveillante
   ouverte sur le poste ne peut pas piloter l'automate.
+- Ouvert au réseau (`--host 0.0.0.0`) : un poste **distant** est en **lecture seule** (écrans et valeurs visibles,
+  aucune écriture vers l'automate, aucune modification d'écran ou de configuration), sauf s'il présente le
+  jeton (`--token`, ou `HMI_TOKEN` pour ne pas l'exposer dans la liste des processus) : une fois
+  `http://<poste>:8080/?token=<jeton>` (mémorisé en cookie `HttpOnly`, `SameSite=Strict`), ou l'en-tête
+  `Authorization: Bearer <jeton>`. Les clients de ce poste gardent tous les droits. Comparaison en temps constant.
+- `--readonly` : lecture seule pour tous, poste local compris. `GET /api/session` indique les droits du client.
+- Le jeton circule en clair (HTTP, pas de TLS) : réseau machine de confiance uniquement.
 - Chemins `..` refusés, tailles bornées (en-têtes 16 Ko, corps 20 Mo, trames 1 Mo), identifiants d'écran contrôlés.
-- Ouvert au réseau (`--host 0.0.0.0`), le service n'a **pas encore d'authentification** : à réserver à un réseau
-  machine isolé tant que le jeton d'accès n'est pas implémenté.
 
 ## Feuille de route
 
-1. ~~Service C + simulateur + protocole web~~ (ce jalon)
+1. ~~Service C + simulateur + protocole web~~
 2. ~~Client ADS en C (AMS/TCP direct, upload des symboles et des types, notifications, écritures)~~
-3. Lancement du navigateur en kiosque par le service, code de retour (bouton « Quitter »)
-4. Jeton d'accès / mode lecture seule pour l'accès réseau ; validation Windows sous CVI 2020
-   (gcc MinGW-w64 : compilé sans avertissement, tests exécutés sous Windows par la CI)
+3. ~~Lancement du navigateur en kiosque par le service, code de retour (bouton « Quitter »)~~
+4. ~~Jeton d'accès / mode lecture seule pour l'accès réseau~~ ; Windows validé avec gcc MinGW-w64 (tests
+   exécutés sous Windows par la CI) ; **reste : compilation sous LabWindows/CVI 2020** (voir `cvi/README.md`)
+5. Validation sur un automate réel (le client ADS est testé contre un faux automate dont le format binaire
+   est vérifié avec la bibliothèque ads-client)
 
 ## Licences
 

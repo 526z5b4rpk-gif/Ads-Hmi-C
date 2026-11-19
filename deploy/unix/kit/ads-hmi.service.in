@@ -7,6 +7,8 @@ Wants=network-online.target
 [Service]
 User=@USER@
 WorkingDirectory=@DIR@
+# jeton d'accès des postes distants (HMI_TOKEN), écrit par installer-service.sh, lisible par root seul
+EnvironmentFile=-/etc/ads-hmi.env
 ExecStart=@DIR@/hmi-service --data @DIR@/data --web @DIR@/web --host @HOTE@ --port @PORT@
 Restart=on-failure
 RestartSec=2

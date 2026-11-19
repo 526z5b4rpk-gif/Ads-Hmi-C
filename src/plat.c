@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -303,6 +304,118 @@ sock_t tcp_connect(const char *host, int port, int timeout_ms, char *err, size_t
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
     return fd;
 }
+
+int path_absolute(const char *path, char *out, size_t cap)
+{
+#ifdef _WIN32
+    DWORD n = GetFullPathNameA(path, (DWORD)cap, out, NULL);
+    return n > 0 && n < cap ? 0 : -1;
+#else
+    char tmp[4096];
+    if (!realpath(path, tmp) || strlen(tmp) >= cap) return -1;
+    memcpy(out, tmp, strlen(tmp) + 1);
+    return 0;
+#endif
+}
+
+/* ------------------------------------------------------------- processus */
+
+#ifdef _WIN32
+
+/** ligne de commande Windows : arguments entre guillemets, règles de CommandLineToArgvW */
+static void quote_arg(sb_t *b, const char *a)
+{
+    if (*a && !strpbrk(a, " \t\"")) { sb_puts(b, a); return; }
+    sb_putc(b, '"');
+    for (const char *p = a;; p++) {
+        size_t bs = 0;
+        while (*p == '\\') { bs++; p++; }
+        if (!*p) { while (bs--) sb_puts(b, "\\\\"); break; }
+        if (*p == '"') { while (bs--) sb_puts(b, "\\\\"); sb_puts(b, "\\\""); }
+        else { while (bs--) sb_putc(b, '\\'); sb_putc(b, *p); }
+    }
+    sb_putc(b, '"');
+}
+
+plat_proc proc_spawn(const char *const *argv, char *err, size_t cap)
+{
+    sb_t cmd = {0};
+    for (int i = 0; argv[i]; i++) {
+        if (i) sb_putc(&cmd, ' ');
+        quote_arg(&cmd, argv[i]);
+    }
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    memset(&pi, 0, sizeof pi);
+    BOOL ok = CreateProcessA(argv[0], cmd.p, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    sb_free(&cmd);
+    if (!ok) {
+        snprintf(err, cap, "lancement impossible : %s (erreur %lu)", argv[0], (unsigned long)GetLastError());
+        return 0;
+    }
+    CloseHandle(pi.hThread);
+    return (plat_proc)pi.hProcess;
+}
+
+int proc_running(plat_proc p) { return p && WaitForSingleObject((HANDLE)p, 0) == WAIT_TIMEOUT; }
+
+void proc_kill(plat_proc p)
+{
+    if (!p) return;
+    if (proc_running(p)) {
+        TerminateProcess((HANDLE)p, 0);
+        WaitForSingleObject((HANDLE)p, 2000);
+    }
+    CloseHandle((HANDLE)p);
+}
+
+#else
+
+/* état d'un processus déjà attendu (waitpid ne peut être appelé qu'une fois après sa fin) */
+static pid_t g_reaped = 0;
+
+plat_proc proc_spawn(const char *const *argv, char *err, size_t cap)
+{
+    pid_t pid = fork();
+    if (pid < 0) { snprintf(err, cap, "lancement impossible : %s", strerror(errno)); return 0; }
+    if (pid == 0) {
+        setsid(); /* groupe propre : arrêt du navigateur et de ses processus fils ensemble */
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    return (plat_proc)pid;
+}
+
+int proc_running(plat_proc p)
+{
+    if (!p || (pid_t)p == g_reaped) return 0;
+    int st;
+    pid_t r = waitpid((pid_t)p, &st, WNOHANG);
+    if (r == 0) return 1;
+    g_reaped = (pid_t)p;
+    return 0;
+}
+
+void proc_kill(plat_proc p)
+{
+    if (!p) return;
+    pid_t pid = (pid_t)p;
+    if (proc_running(p)) {
+        kill(-pid, SIGTERM);
+        kill(pid, SIGTERM);
+        for (int i = 0; i < 40 && proc_running(p); i++) sleep_ms(50);
+        if (proc_running(p)) {
+            kill(-pid, SIGKILL);
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            g_reaped = pid;
+        }
+    }
+}
+
+#endif
 
 /* ------------------------------------------------------------- fichiers */
 

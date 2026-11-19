@@ -9,9 +9,10 @@ Contenu
   data\calculs.json               variables calculées (page /calculs.html) - à sauvegarder
   data\config.json                connexion (créé au premier « Appliquer » ; absent = simulateur)
   logs\                           journal du service quand il est lancé par kiosque.bat
-  parametres.bat                  port, adresse d'écoute, écran affiché : SEUL fichier à modifier
+  parametres.bat                  port, adresse d'écoute, écran affiché, jeton : SEUL fichier à modifier
   demarrer.bat                    lance le service dans une console (mise en service, diagnostic)
   kiosque.bat                     poste opérateur : service + Edge en plein écran sur l'écran choisi
+                                  (bouton « Quitter » ou fermeture d'Edge : arrêt du service)
   arreter.bat                     arrête le service
   demarrage-auto-installer.bat    lance kiosque.bat à l'ouverture de session
   demarrage-auto-supprimer.bat    annule le démarrage automatique
@@ -45,9 +46,15 @@ Exploitation
   - config.json illisible (fichier abîmé) : le service démarre sans connexion, garde une copie
     config.json.illisible-<date> et l'interface affiche l'erreur ; « Appliquer » une configuration
     la remplace.
-  - Quitter le mode kiosque : Alt+F4 (Edge), puis arreter.bat si nécessaire.
+  - Quitter le mode kiosque : bouton « Quitter » en haut à droite de l'écran, ou Alt+F4 ; le service
+    s'arrête avec le navigateur. Code de retour de hmi-service.exe : 0 (utilisable par un programme qui
+    lance l'IHM et attend sa fin : hmi-service.exe --kiosk --screen <écran>).
 
 Sécurité
 --------
   Par défaut le service n'écoute que ce poste (127.0.0.1). HOTE=0.0.0.0 le rend accessible depuis le
-  réseau SANS authentification (pas encore implémentée) : réseau machine isolé uniquement.
+  réseau : les autres postes voient les écrans en LECTURE SEULE (ni écriture vers l'automate, ni
+  modification des écrans). Pour leur donner tous les droits, définir JETON dans parametres.bat puis
+  ouvrir une fois http://<ce-pc>:8080/?token=<jeton> sur le poste distant (mémorisé par le navigateur).
+  Le jeton circule en clair (HTTP) : réseau machine de confiance uniquement.
+  Lecture seule pour tous, ce poste compris : ajouter --readonly à la ligne de commande.

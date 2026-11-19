@@ -47,6 +47,8 @@ struct http_conn {
     int dead;
     int responded;
     int flag;
+    int access;
+    int peer_local;
     double created;
     double drain_deadline;
     /* message WebSocket fragmenté en cours */
@@ -330,6 +332,7 @@ static void ws_close(http_conn *c, int code)
 }
 
 size_t http_conn_pending(const http_conn *c) { return c->out.len - c->out_off; }
+int *http_conn_access(http_conn *c) { return &c->access; }
 int *http_conn_flag(http_conn *c) { return &c->flag; }
 
 void http_ws_foreach(http_server *s, void (*fn)(void *, http_conn *), void *ctx)
@@ -462,6 +465,7 @@ static void process_http(http_conn *c)
     *target++ = 0;
     *version++ = 0;
     const char *host = NULL, *origin = NULL, *upgrade = NULL, *key = NULL, *te = NULL;
+    const char *cookie = NULL, *authz = NULL;
     unsigned long clen = 0;
     for (char *q = eol + 2;;) {
         char *e = strstr(q, "\r\n");
@@ -476,6 +480,8 @@ static void process_http(http_conn *c)
             else if (str_ieq(q, "upgrade")) upgrade = v;
             else if (str_ieq(q, "sec-websocket-key")) key = v;
             else if (str_ieq(q, "transfer-encoding")) te = v;
+            else if (str_ieq(q, "cookie")) cookie = v;
+            else if (str_ieq(q, "authorization")) authz = v;
             else if (str_ieq(q, "content-length")) {
                 char *end;
                 clen = strtoul(v, &end, 10);
@@ -506,22 +512,23 @@ static void process_http(http_conn *c)
         }
         char acc[32];
         ws_accept_key(key, acc);
-        free(hdr);
         sb_printf(&c->out,
                   "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                   "Sec-WebSocket-Accept: %s\r\n\r\n",
                   acc);
+        c->state = CS_WS;
+        conn_flush(c);
+        http_req wreq = {method, path, query, NULL, 0, cookie, authz, c->peer_local};
+        if (s->h.on_ws_open) s->h.on_ws_open(s->h.ctx, c, &wreq);
+        free(hdr);
         memmove(c->in.p, c->in.p + hl, c->in.len - hl);
         c->in.len -= hl;
         c->in.p[c->in.len] = 0;
-        c->state = CS_WS;
-        conn_flush(c);
-        if (s->h.on_ws_open) s->h.on_ws_open(s->h.ctx, c);
         process_ws(c);
         return;
     }
 
-    http_req req = {method, path, query, c->in.p + hl, clen};
+    http_req req = {method, path, query, c->in.p + hl, clen, cookie, authz, c->peer_local};
     c->responded = 0;
     s->h.on_request(s->h.ctx, c, &req);
     free(hdr);
@@ -598,10 +605,30 @@ static void process_ws(http_conn *c)
 
 /* ======================================================================= boucle */
 
+/** client sur cette machine : 127.0.0.0/8, ::1, ou IPv4 locale encapsulée (::ffff:127.x.x.x) */
+static int peer_is_local(const struct sockaddr_storage *a)
+{
+    if (a->ss_family == AF_INET) {
+        const uint8_t *b = (const uint8_t *)&((const struct sockaddr_in *)a)->sin_addr;
+        return b[0] == 127;
+    }
+    if (a->ss_family == AF_INET6) {
+        const uint8_t *b = (const uint8_t *)&((const struct sockaddr_in6 *)a)->sin6_addr;
+        static const uint8_t lo[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+        static const uint8_t v4[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+        if (memcmp(b, lo, 16) == 0) return 1;
+        return memcmp(b, v4, 12) == 0 && b[12] == 127;
+    }
+    return 0;
+}
+
 static void accept_all(http_server *s)
 {
     for (;;) {
-        sock_t fd = accept(s->lfd, NULL, NULL);
+        struct sockaddr_storage peer;
+        socklen_t plen = sizeof peer;
+        memset(&peer, 0, sizeof peer);
+        sock_t fd = accept(s->lfd, (struct sockaddr *)&peer, &plen);
         if (fd == SOCK_INVALID) return;
         if (s->n >= MAX_CONNS || sock_nonblock(fd) != 0) {
             sock_close(fd);
@@ -617,6 +644,7 @@ static void accept_all(http_server *s)
         c->state = CS_HTTP;
         c->created = mono_ms();
         c->srv = s;
+        c->peer_local = peer_is_local(&peer);
         if (s->n == s->cap) {
             s->cap = s->cap ? s->cap * 2 : 16;
             s->conns = xrealloc(s->conns, (size_t)s->cap * sizeof *s->conns);

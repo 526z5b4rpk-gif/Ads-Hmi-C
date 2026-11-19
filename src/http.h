@@ -25,14 +25,19 @@ typedef struct {
     const char *query;
     const char *body;
     size_t body_len;
+    /** en-têtes Cookie et Authorization (NULL si absents) */
+    const char *cookie;
+    const char *authorization;
+    /** 1 si le client est sur cette machine (127.0.0.0/8, ::1) */
+    int peer_local;
 } http_req;
 
 typedef struct {
     void *ctx;
     /** requête HTTP : le gestionnaire doit appeler http_respond une fois */
     void (*on_request)(void *ctx, http_conn *c, const http_req *req);
-    /** connexion WebSocket ouverte sur /ws */
-    void (*on_ws_open)(void *ctx, http_conn *c);
+    /** connexion WebSocket ouverte sur /ws (requête d'ouverture : cookie, chaîne de requête…) */
+    void (*on_ws_open)(void *ctx, http_conn *c, const http_req *req);
     /** message texte complet reçu */
     void (*on_ws_text)(void *ctx, http_conn *c, const char *data, size_t len);
 } http_handlers;
@@ -53,6 +58,8 @@ void ws_send_text(http_conn *c, const char *data, size_t len);
 size_t http_conn_pending(const http_conn *c);
 /** indicateur libre à l'usage de l'application (ex. client à resynchroniser) */
 int *http_conn_flag(http_conn *c);
+/** second indicateur libre (ex. niveau d'accès de la connexion WebSocket) */
+int *http_conn_access(http_conn *c);
 /** appelle fn pour chaque connexion WebSocket ouverte */
 void http_ws_foreach(http_server *s, void (*fn)(void *ctx, http_conn *c), void *ctx);
 /** nombre de connexions WebSocket ouvertes */

@@ -11,8 +11,14 @@
  *   GET  /api/calc                 variables calculées avec valeur courante et erreur éventuelle
  *   PUT  /api/calc                 remplace les variables calculées (data/calculs.json)
  *   POST /api/calc/test            évalue une expression sur les valeurs courantes
+ *   GET  /api/session              droits du client (complet / lecture seule), options kiosque et quitter
+ *   POST /api/quit                 arrête le service avec un code de retour (--kiosk ou --quit)
  *   GET  /ws                       WebSocket temps réel (schema, d, status, wr, dashboards)
  *   GET  /…                        fichiers du front web (dossier web/), index.html par défaut
+ *
+ * Accès : un client de ce poste a tous les droits ; un client distant est en lecture seule sauf s'il présente
+ * le jeton d'accès (--token ou variable HMI_TOKEN) : ?token=… dans l'adresse (mémorisé en cookie),
+ * en-tête « Authorization: Bearer … » ou cookie hmi_token. --readonly : lecture seule pour tous.
  *
  * Boucle principale mono-thread : réseau (poll, 10 ms au plus) puis diffusion des changements du hub.
  * La source de données (simulateur, ADS) tourne sur son propre thread.
@@ -27,13 +33,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VERSION "0.1.0"
+#define VERSION "0.2.0"
 /** au-delà, un client n'arrive plus à suivre : ses deltas sont abandonnés et il recevra un schéma complet */
 #define SLOW_CLIENT_BYTES (4u * 1024 * 1024)
+
+enum { ACC_READ = 1, ACC_FULL = 2 };
 
 typedef struct {
     hub_t *hub;
     http_server *srv;
+    /* accès */
+    char token[256];
+    int readonly;
+    /* kiosque et sortie */
+    int kiosk;
+    int allow_quit;
+    int exit_code;
+    double quit_at;
+    plat_proc browser;
     char data_dir[1024];
     char dash_dir[1100];
     char web_dir[1024];
@@ -107,6 +124,64 @@ static void broadcast(void *ctx, const char *json, size_t len, int is_delta)
     bcast b = {app, json, len, is_delta};
     app->resync_built = 0;
     http_ws_foreach(app->srv, send_one, &b);
+}
+
+/* ======================================================================= accès */
+
+/** comparaison en temps constant (pas d'indice sur le jeton par la durée de réponse) */
+static int secret_eq(const char *a, size_t alen, const char *b)
+{
+    size_t blen = strlen(b);
+    unsigned diff = (unsigned)(alen ^ blen);
+    for (size_t i = 0; i < blen; i++) diff |= (unsigned)(i < alen ? (unsigned char)a[i] : 0) ^ (unsigned char)b[i];
+    return diff == 0 && blen > 0;
+}
+
+/** valeur de `name` dans une liste « a=1&b=2 » ou « a=1; b=2 » ; longueur dans *len */
+static const char *find_param(const char *list, const char *name, char sep, size_t *len)
+{
+    size_t nl = strlen(name);
+    for (const char *p = list; p && *p;) {
+        while (*p == ' ' || *p == sep) p++;
+        const char *end = strchr(p, sep);
+        if (!end) end = p + strlen(p);
+        if ((size_t)(end - p) > nl && !strncmp(p, name, nl) && p[nl] == '=') {
+            *len = (size_t)(end - p) - nl - 1;
+            return p + nl + 1;
+        }
+        p = end;
+    }
+    return NULL;
+}
+
+/** jeton valide présent dans la requête (adresse, cookie ou en-tête Authorization) */
+static int has_token(const app_t *app, const http_req *r, int *from_query)
+{
+    if (from_query) *from_query = 0;
+    if (!app->token[0]) return 0;
+    size_t n;
+    const char *v = find_param(r->query, "token", '&', &n);
+    if (v && secret_eq(v, n, app->token)) { if (from_query) *from_query = 1; return 1; }
+    v = find_param(r->cookie, "hmi_token", ';', &n);
+    if (v && secret_eq(v, n, app->token)) return 1;
+    if (r->authorization && str_istarts(r->authorization, "Bearer ")) {
+        v = r->authorization + 7;
+        if (secret_eq(v, strlen(v), app->token)) return 1;
+    }
+    return 0;
+}
+
+static int access_of(const app_t *app, const http_req *r)
+{
+    if (app->readonly) return ACC_READ;
+    if (r->peer_local || has_token(app, r, NULL)) return ACC_FULL;
+    return ACC_READ;
+}
+
+static const char *readonly_msg(const app_t *app)
+{
+    return app->readonly ? "Service en lecture seule (option --readonly)"
+                         : "Accès en lecture seule : jeton d'accès requis pour modifier (poste distant)";
 }
 
 /* ======================================================================= API */
@@ -263,9 +338,45 @@ static void api_calc(app_t *app, http_conn *c, const http_req *r, int test)
     sb_free(&out);
 }
 
+static void api_session(app_t *app, http_conn *c, const http_req *r)
+{
+    sb_t b = {0};
+    sb_printf(&b, "{\"access\":\"%s\",\"readonly\":%s,\"local\":%s,\"kiosk\":%s,\"quit\":%s,\"version\":\"%s\"}",
+              access_of(app, r) == ACC_FULL ? "full" : "read", app->readonly ? "true" : "false",
+              r->peer_local ? "true" : "false", app->kiosk ? "true" : "false",
+              app->allow_quit && access_of(app, r) == ACC_FULL ? "true" : "false", VERSION);
+    send_json(c, 200, b.p, b.len);
+    sb_free(&b);
+}
+
+/** POST /api/quit {"code":N} : arrêt du service, code de retour N (0-255) */
+static void api_quit(app_t *app, http_conn *c, const http_req *r)
+{
+    if (strcmp(r->method, "POST") != 0) { send_error(c, 405, "Méthode non autorisée"); return; }
+    if (!app->allow_quit) { send_error(c, 403, "Arrêt depuis l'interface non autorisé (options --kiosk ou --quit)"); return; }
+    int code = 0;
+    cJSON *doc = cJSON_ParseWithLength(r->body, r->body_len);
+    const cJSON *jc = cJSON_GetObjectItemCaseSensitive(doc, "code");
+    if (cJSON_IsNumber(jc)) code = (int)jc->valuedouble;
+    cJSON_Delete(doc);
+    if (code < 0 || code > 255) { send_error(c, 400, "Code de retour entre 0 et 255"); return; }
+    app->exit_code = code;
+    app->quit_at = mono_ms();
+    log_info("arrêt demandé depuis l'interface (code de retour %d)", code);
+    send_ok(c);
+}
+
 static void api(app_t *app, http_conn *c, const http_req *r)
 {
     const char *p = r->path;
+    int modifying = strcmp(r->method, "GET") && strcmp(r->method, "HEAD");
+    /* lecture seule : seules les requêtes sans effet passent (l'évaluation d'expression n'écrit rien) */
+    if (modifying && strcmp(p, "/api/calc/test") != 0 && access_of(app, r) != ACC_FULL) {
+        send_error(c, 403, readonly_msg(app));
+        return;
+    }
+    if (!strcmp(p, "/api/session")) { api_session(app, c, r); return; }
+    if (!strcmp(p, "/api/quit")) { api_quit(app, c, r); return; }
     if (!strcmp(p, "/api/config")) { api_config(app, c, r); return; }
     if (!strcmp(p, "/api/dashboards")) {
         if (strcmp(r->method, "GET") != 0) { send_error(c, 405, "Méthode non autorisée"); return; }
@@ -329,6 +440,13 @@ static void serve_static(app_t *app, http_conn *c, const http_req *r)
     if (!data) { send_error(c, 404, "Not found (front web absent : dossier web/)"); return; }
     const char *cache = strstr(file, "/assets/") ? "Cache-Control: public, max-age=31536000, immutable\r\n"
                                                  : "Cache-Control: no-cache\r\n";
+    /* jeton présenté dans l'adresse : mémorisé dans un cookie (envoyé ensuite par l'API et le WebSocket) */
+    int from_query;
+    char headers[600];
+    if (has_token(app, r, &from_query) && from_query) {
+        snprintf(headers, sizeof headers, "%sSet-Cookie: hmi_token=%s; Path=/; HttpOnly; SameSite=Strict\r\n", cache, app->token);
+        cache = headers;
+    }
     http_respond(c, 200, mime_type(file), cache, data, strcmp(r->method, "HEAD") ? len : 0);
     free(data);
 }
@@ -342,9 +460,10 @@ static void on_request(void *ctx, http_conn *c, const http_req *r)
     else serve_static(app, c, r);
 }
 
-static void on_ws_open(void *ctx, http_conn *c)
+static void on_ws_open(void *ctx, http_conn *c, const http_req *r)
 {
     app_t *app = ctx;
+    *http_conn_access(c) = access_of(app, r);
     sb_t b = {0};
     hub_status_msg(app->hub, &b);
     ws_send_text(c, b.p, b.len);
@@ -365,8 +484,10 @@ static void on_ws_text(void *ctx, http_conn *c, const char *data, size_t len)
         const cJSON *path = cJSON_GetObjectItemCaseSensitive(m, "path");
         const cJSON *value = cJSON_GetObjectItemCaseSensitive(m, "value");
         char err[512] = "";
-        int rc = cJSON_IsString(path) ? hub_write(app->hub, path->valuestring, value, err, sizeof err)
-                                      : (snprintf(err, sizeof err, "Chemin de variable manquant"), -1);
+        int rc;
+        if (*http_conn_access(c) != ACC_FULL) rc = (snprintf(err, sizeof err, "%s", readonly_msg(app)), -1);
+        else if (cJSON_IsString(path)) rc = hub_write(app->hub, path->valuestring, value, err, sizeof err);
+        else rc = (snprintf(err, sizeof err, "Chemin de variable manquant"), -1);
         sb_t b = {0};
         sb_puts(&b, "{\"t\":\"wr\",\"id\":");
         sb_json_num(&b, cJSON_IsNumber(id) ? id->valuedouble : 0, 0);
@@ -390,12 +511,106 @@ static void usage(void)
 {
     printf("ADS HMI service %s\n\n"
            "Usage : hmi-service [options]\n"
-           "  --data <dossier>   écrans, configuration (défaut : data)\n"
-           "  --web <dossier>    front web compilé (défaut : web)\n"
-           "  --host <adresse>   adresse d'écoute (défaut : 127.0.0.1 ; 0.0.0.0 = tout le réseau)\n"
-           "  --port <port>      port HTTP (défaut : 8080)\n"
-           "  --version          affiche la version\n",
+           "  --data <dossier>     écrans, configuration (défaut : data)\n"
+           "  --web <dossier>      front web compilé (défaut : web)\n"
+           "  --host <adresse>     adresse d'écoute (défaut : 127.0.0.1 ; 0.0.0.0 = tout le réseau)\n"
+           "  --port <port>        port HTTP (défaut : 8080)\n"
+           "\n"
+           "Poste opérateur :\n"
+           "  --kiosk              ouvre le navigateur (Edge, Chrome, Chromium) en plein écran ; le service\n"
+           "                       s'arrête quand le navigateur est fermé ou par le bouton « Quitter »\n"
+           "  --screen <écran>     écran affiché en kiosque (défaut : liste des écrans)\n"
+           "  --browser <chemin>   navigateur à utiliser (défaut : recherche automatique)\n"
+           "  --quit               autorise le bouton « Quitter » sans --kiosk\n"
+           "                       (code de retour du processus = code choisi, 0 par défaut)\n"
+           "\n"
+           "Accès réseau :\n"
+           "  --token <secret>     jeton exigé des postes distants pour modifier (sinon lecture seule) ;\n"
+           "                       aussi variable d'environnement HMI_TOKEN\n"
+           "  --readonly           lecture seule pour tous les clients\n"
+           "  --version            affiche la version\n",
            VERSION);
+}
+
+/* ======================================================================= kiosque */
+
+static int find_in_path(const char *name, char *out, size_t cap)
+{
+    const char *path = getenv("PATH");
+#ifdef _WIN32
+    const char sep = ';';
+#else
+    const char sep = ':';
+#endif
+    while (path && *path) {
+        const char *e = strchr(path, sep);
+        size_t n = e ? (size_t)(e - path) : strlen(path);
+        if (n > 0 && n + strlen(name) + 2 < cap) {
+            snprintf(out, cap, "%.*s/%s", (int)n, path, name);
+            if (path_is_file(out)) return 0;
+        }
+        path = e ? e + 1 : NULL;
+    }
+    return -1;
+}
+
+/** navigateur de type Chromium (option --kiosk) */
+static int find_browser(char *out, size_t cap)
+{
+#ifdef _WIN32
+    static const char *const env[] = {"ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"};
+    static const char *const rel[] = {"\\Microsoft\\Edge\\Application\\msedge.exe",
+                                      "\\Google\\Chrome\\Application\\chrome.exe",
+                                      "\\Chromium\\Application\\chrome.exe"};
+    for (size_t r = 0; r < sizeof rel / sizeof rel[0]; r++)
+        for (size_t e = 0; e < sizeof env / sizeof env[0]; e++) {
+            const char *base = getenv(env[e]);
+            if (!base) continue;
+            snprintf(out, cap, "%s%s", base, rel[r]);
+            if (path_is_file(out)) return 0;
+        }
+    return -1;
+#else
+    static const char *const abs[] = {
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    };
+    for (size_t i = 0; i < sizeof abs / sizeof abs[0]; i++)
+        if (path_is_file(abs[i])) { str_copy(out, cap, abs[i]); return 0; }
+    static const char *const names[] = {"chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
+                                        "microsoft-edge", "microsoft-edge-stable"};
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (find_in_path(names[i], out, cap) == 0) return 0;
+    return -1;
+#endif
+}
+
+/** lance le navigateur en plein écran sur l'écran choisi ; 0 si lancé */
+static int start_kiosk(app_t *app, const char *browser, const char *host, int port, const char *screen)
+{
+    char exe[1024];
+    if (browser) str_copy(exe, sizeof exe, browser);
+    else if (find_browser(exe, sizeof exe) != 0) {
+        log_error("kiosque : aucun navigateur trouvé (Edge, Chrome, Chromium) : préciser --browser <chemin>");
+        return -1;
+    }
+    /* profil dédié : instance séparée du navigateur de l'utilisateur, qui reste ouverte tant que dure le kiosque */
+    char prof[1200], absprof[1400], profarg[1500], url[512];
+    snprintf(prof, sizeof prof, "%s/kiosque-navigateur", app->data_dir);
+    dir_make(prof);
+    if (path_absolute(prof, absprof, sizeof absprof) != 0) str_copy(absprof, sizeof absprof, prof);
+    snprintf(profarg, sizeof profarg, "--user-data-dir=%s", absprof);
+    const char *h = (!strcmp(host, "0.0.0.0") || !strcmp(host, "::")) ? "127.0.0.1" : host;
+    if (screen && *screen) snprintf(url, sizeof url, "http://%s:%d/#/run/%s", h, port, screen);
+    else snprintf(url, sizeof url, "http://%s:%d/", h, port);
+    const char *argv[] = {exe, "--kiosk", "--no-first-run", "--no-default-browser-check", "--disable-features=Translate",
+                          "--disable-session-crashed-bubble", "--edge-kiosk-type=fullscreen", profarg, url, NULL};
+    char err[512];
+    app->browser = proc_spawn(argv, err, sizeof err);
+    if (!app->browser) { log_error("kiosque : %s", err); return -1; }
+    log_info("kiosque : %s %s", exe, url);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -403,6 +618,7 @@ int main(int argc, char **argv)
     app_t app;
     memset(&app, 0, sizeof app);
     const char *data = "data", *web = "web", *host = "127.0.0.1";
+    const char *screen = NULL, *browser = NULL, *token = getenv("HMI_TOKEN");
     int port = 8080;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -411,11 +627,26 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--web") && has) web = argv[++i];
         else if (!strcmp(a, "--host") && has) host = argv[++i];
         else if (!strcmp(a, "--port") && has) port = atoi(argv[++i]);
+        else if (!strcmp(a, "--kiosk")) app.kiosk = 1;
+        else if (!strcmp(a, "--screen") && has) screen = argv[++i];
+        else if (!strcmp(a, "--browser") && has) browser = argv[++i];
+        else if (!strcmp(a, "--quit")) app.allow_quit = 1;
+        else if (!strcmp(a, "--token") && has) token = argv[++i];
+        else if (!strcmp(a, "--readonly")) app.readonly = 1;
         else if (!strcmp(a, "--version")) { printf("%s\n", VERSION); return 0; }
         else if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(); return 0; }
         else { fprintf(stderr, "option inconnue : %s (voir --help)\n", a); return 2; }
     }
     if (port <= 0 || port > 65535) { fprintf(stderr, "port invalide\n"); return 2; }
+    if (token && *token) {
+        if (strlen(token) < 8 || strlen(token) >= sizeof app.token || strcspn(token, " ;&=\"\r\n\t") != strlen(token)) {
+            fprintf(stderr, "jeton invalide : 8 caractères au moins, sans espace ni ; & = \"\n");
+            return 2;
+        }
+        str_copy(app.token, sizeof app.token, token);
+    }
+    if (screen && !store_valid_id(screen)) { fprintf(stderr, "écran invalide : %s\n", screen); return 2; }
+    if (app.kiosk) app.allow_quit = 1;
     str_copy(app.data_dir, sizeof app.data_dir, data);
     str_copy(app.web_dir, sizeof app.web_dir, web);
     snprintf(app.dash_dir, sizeof app.dash_dir, "%s/dashboards", app.data_dir);
@@ -452,16 +683,33 @@ int main(int argc, char **argv)
     }
     log_info("ADS HMI service %s : http://%s:%d  (données : %s)", VERSION,
              strcmp(host, "0.0.0.0") ? host : "localhost", port, app.data_dir);
+    int is_loopback = !strncmp(host, "127.", 4) || !strcmp(host, "localhost") || !strcmp(host, "::1");
+    if (app.readonly) log_info("accès : lecture seule pour tous les clients");
+    else if (!is_loopback)
+        log_info(app.token[0] ? "accès réseau : modifications réservées aux postes de ce PC et aux porteurs du jeton"
+                              : "accès réseau : postes distants en lecture seule (aucun jeton défini, voir --token)");
 
+    if (app.kiosk && start_kiosk(&app, browser, host, port, screen) != 0) app.exit_code = 1;
+    double last_check = mono_ms();
     while (!pf_get(&g_quit)) {
         http_poll(app.srv, 10);
         hub_poll(app.hub, broadcast, &app);
+        /* « Quitter » : la réponse part, puis arrêt */
+        if (app.quit_at > 0 && mono_ms() - app.quit_at > 200) break;
+        if (app.kiosk && mono_ms() - last_check > 300) {
+            last_check = mono_ms();
+            if (!proc_running(app.browser)) {
+                log_info("kiosque : navigateur fermé, arrêt du service");
+                break;
+            }
+        }
     }
 
     log_info("arrêt demandé");
+    proc_kill(app.browser);
     hub_free(app.hub);
     http_free(app.srv);
     cJSON_Delete(app.config);
     sb_free(&app.resync);
-    return 0;
+    return app.exit_code;
 }

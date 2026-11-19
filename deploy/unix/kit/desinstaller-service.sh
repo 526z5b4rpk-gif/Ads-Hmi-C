@@ -3,6 +3,6 @@
 set -eu
 [ "$(id -u)" -eq 0 ] || { echo "À lancer avec sudo." >&2; exit 1; }
 systemctl disable --now ads-hmi.service 2>/dev/null || true
-rm -f /etc/systemd/system/ads-hmi.service
+rm -f /etc/systemd/system/ads-hmi.service /etc/ads-hmi.env
 systemctl daemon-reload
 echo "Service ads-hmi supprimé."

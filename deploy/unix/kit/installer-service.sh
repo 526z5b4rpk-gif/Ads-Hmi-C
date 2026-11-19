@@ -9,6 +9,15 @@ command -v systemctl >/dev/null || { echo "systemd absent : utiliser kiosque.sh.
 case "$DIR" in *" "*) echo "Le chemin du kit ne doit pas contenir d'espace : $DIR" >&2; exit 1 ;; esac
 UTIL=${SUDO_USER:-$(id -un)}
 
+# jeton : hors du fichier d'unité (lisible par tous), dans un fichier réservé à root
+if [ -n "${JETON:-}" ]; then
+    umask 077
+    printf 'HMI_TOKEN=%s\n' "$JETON" > /etc/ads-hmi.env
+    chmod 600 /etc/ads-hmi.env
+else
+    rm -f /etc/ads-hmi.env
+fi
+
 sed -e "s|@DIR@|$DIR|g" -e "s|@USER@|$UTIL|g" -e "s|@HOTE@|$HOTE|g" -e "s|@PORT@|$PORT|g" \
     "$DIR/ads-hmi.service.in" > /etc/systemd/system/ads-hmi.service
 systemctl daemon-reload

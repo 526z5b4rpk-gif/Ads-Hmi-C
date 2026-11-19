@@ -95,6 +95,17 @@ int sock_would_block(void);
  */
 sock_t tcp_connect(const char *host, int port, int timeout_ms, char *err, size_t cap);
 
+/* ------------------------------------------------------------- processus */
+
+/** processus lancé (navigateur en kiosque) ; 0 = aucun */
+typedef intptr_t plat_proc;
+/** lance argv[0] avec ses arguments (argv terminé par NULL), sans attendre ; 0 et message dans err si échec */
+plat_proc proc_spawn(const char *const *argv, char *err, size_t cap);
+/** 1 tant que le processus tourne */
+int proc_running(plat_proc p);
+/** termine le processus (s'il tourne encore) et libère la poignée */
+void proc_kill(plat_proc p);
+
 /* ------------------------------------------------------------- fichiers */
 
 /** lit tout un fichier (alloué, terminé par nul) ; NULL si erreur. `notfound` (facultatif) = 1 si absent. */
@@ -109,6 +120,8 @@ int file_remove(const char *path);
 /** crée le dossier et ses parents (mkdir -p) */
 int dir_make(const char *path);
 int path_is_dir(const char *path);
+/** chemin absolu d'un fichier ou dossier existant ; 0 si succès */
+int path_absolute(const char *path, char *out, size_t cap);
 int path_is_file(const char *path);
 /** appelle fn pour chaque entrée du dossier (hors . et ..) ; fn renvoie 0 pour continuer */
 int dir_list(const char *dir, int (*fn)(const char *name, void *ctx), void *ctx);

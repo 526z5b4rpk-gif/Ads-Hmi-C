@@ -24,25 +24,25 @@ function check(cond, label) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** démarre le service sur un port libre avec un dossier de données temporaire */
-async function start(prepare) {
+async function start(prepare, args = []) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hmi-e2e-'));
   fs.mkdirSync(path.join(dir, 'dashboards'));
   fs.copyFileSync(path.join(ROOT, 'data/dashboards/demo.json'), path.join(dir, 'dashboards/demo.json'));
   prepare?.(dir);
   const port = 20000 + Math.floor(Math.random() * 20000);
-  const proc = spawn(BIN, ['--data', dir, '--web', path.join(ROOT, 'web'), '--port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = spawn(BIN, ['--data', dir, '--web', path.join(ROOT, 'web'), '--port', String(port), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
   proc.stderr.on('data', (d) => (log += d));
   proc.stdout.on('data', (d) => (log += d));
   for (let i = 0; i < 100 && !log.includes('http://'); i++) await sleep(50);
   const base = `http://127.0.0.1:${port}`;
-  return { dir, port, base, proc, log: () => log };
+  const exited = new Promise((r) => proc.on('exit', (code) => r(code)));
+  return { dir, port, base, proc, exited, log: () => log };
 }
 
 async function stop(s) {
-  const exited = new Promise((r) => s.proc.on('exit', (code) => r(code)));
-  s.proc.kill('SIGTERM');
-  const code = await Promise.race([exited, sleep(5000).then(() => 'timeout')]);
+  if (s.proc.exitCode === null && s.proc.signalCode === null) s.proc.kill('SIGTERM');
+  const code = await Promise.race([s.exited, sleep(5000).then(() => 'timeout')]);
   fs.rmSync(s.dir, { recursive: true, force: true });
   return code;
 }
@@ -372,6 +372,140 @@ try {
   check(WIN ? code !== 'timeout' : code === 0, 'arrêt propre');
   if (/runtime error|AddressSanitizer|LeakSanitizer/.test(s4.log())) { failures++; console.log(s4.log()); }
   await plc.close();
+}
+
+/* ------------------------------------------------------------------------------------------ */
+
+const sanitizerClean = (srv) => { if (/runtime error|AddressSanitizer|LeakSanitizer/.test(srv.log())) { failures++; console.log(srv.log()); } };
+const putDash = (base, headers = {}) => fetch(base + '/api/dashboards/essai', { method: 'PUT',
+  headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ name: 'Essai', widgets: [] }) });
+
+console.log('Bouton « Quitter » et code de retour');
+const s5 = await start(null, ['--quit']);
+try {
+  let r = await fetch(s5.base + '/api/session');
+  const ses = await r.json();
+  check(ses.access === 'full' && ses.local === true && ses.quit === true && ses.kiosk === false, 'GET /api/session : poste local, quitter autorisé');
+  r = await fetch(s5.base + '/');
+  check((await r.text()).includes('/kiosk.js'), 'index.html charge kiosk.js');
+  r = await fetch(s5.base + '/kiosk.js');
+  check(r.status === 200 && (await r.text()).includes('/api/quit'), 'GET /kiosk.js');
+  const resp = await raw(s5.port, `POST /api/quit HTTP/1.1\r\nHost: 127.0.0.1:${s5.port}\r\nOrigin: http://evil.example\r\nContent-Length: 10\r\n\r\n{"code":1}`);
+  check(resp.startsWith('HTTP/1.1 403'), 'POST /api/quit depuis une autre origine refusé');
+  r = await fetch(s5.base + '/api/quit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"code":300}' });
+  check(r.status === 400, 'code de retour hors 0-255 refusé');
+  r = await fetch(s5.base + '/api/quit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"code":3}' });
+  check(r.status === 200, 'POST /api/quit');
+  const code = await Promise.race([s5.exited, sleep(3000).then(() => 'timeout')]);
+  check(code === 3, `service arrêté avec le code de retour demandé (${code})`);
+} finally {
+  await stop(s5);
+  sanitizerClean(s5);
+}
+
+console.log('Lecture seule (--readonly)');
+const s6 = await start(null, ['--readonly']);
+try {
+  let r = await fetch(s6.base + '/api/session');
+  const ses = await r.json();
+  check(ses.access === 'read' && ses.readonly === true && ses.quit === false, 'session en lecture seule');
+  r = await putDash(s6.base);
+  check(r.status === 403 && (await r.json()).error.includes('lecture seule'), 'modification d\'écran refusée');
+  r = await fetch(s6.base + '/api/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: '{"source":"sim"}' });
+  check(r.status === 403, 'modification de la configuration refusée');
+  r = await fetch(s6.base + '/api/quit', { method: 'POST', body: '{}' });
+  check(r.status === 403, 'arrêt refusé');
+  r = await fetch(s6.base + '/api/calc/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"expr":"1+1"}' });
+  check(r.status === 200 && (await r.json()).value === 2, 'évaluation d\'expression autorisée (sans effet)');
+  const c = wsClient(s6.base);
+  await c.waitFor((m) => m.t === 'schema' && m.schema.leaves.length > 0);
+  const w = await c.write('SIM.stHmi.stCmd.bMarche', true);
+  check(w && !w.ok && w.error.includes('lecture seule'), 'écriture WebSocket refusée');
+  check(!!(await c.waitFor((m) => m.t === 'd', 2000)), 'valeurs toujours reçues');
+  c.ws.close();
+} finally {
+  const code = await stop(s6);
+  check(WIN ? code !== 'timeout' : code === 0, 'arrêt propre');
+  sanitizerClean(s6);
+}
+
+console.log('Jeton d\'accès (poste distant)');
+const lanIp = Object.values(os.networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
+if (!lanIp) {
+  console.log('  (ignoré : aucune adresse réseau non locale sur cette machine)');
+} else {
+  const TOKEN = 'jeton-de-test-1234';
+  const s7 = await start(null, ['--host', '0.0.0.0', '--token', TOKEN]);
+  const remote = `http://${lanIp}:${s7.port}`;
+  try {
+    let r = await fetch(remote + '/api/session');
+    let ses = await r.json();
+    check(ses.access === 'read' && ses.local === false, `poste distant (${lanIp}) sans jeton : lecture seule`);
+    r = await fetch(s7.base + '/api/session');
+    check((await r.json()).access === 'full', 'poste local : accès complet sans jeton');
+    r = await putDash(remote);
+    check(r.status === 403 && (await r.json()).error.includes('jeton'), 'poste distant sans jeton : modification refusée');
+    r = await putDash(remote, { authorization: 'Bearer mauvais-jeton-0000' });
+    check(r.status === 403, 'mauvais jeton refusé');
+    r = await putDash(remote, { authorization: `Bearer ${TOKEN}` });
+    check(r.status === 200, 'jeton dans l\'en-tête Authorization accepté');
+    r = await fetch(remote + `/?token=${TOKEN}`);
+    const ck = r.headers.get('set-cookie') ?? '';
+    check(ck.includes(`hmi_token=${TOKEN}`) && ck.includes('HttpOnly') && ck.includes('SameSite=Strict'), 'jeton dans l\'adresse : mémorisé en cookie');
+    r = await fetch(remote + '/api/session', { headers: { cookie: `hmi_token=${TOKEN}` } });
+    check((await r.json()).access === 'full', 'cookie accepté');
+    const ro = wsClient(remote);
+    await ro.waitFor((m) => m.t === 'schema' && m.schema.leaves.length > 0);
+    let w = await ro.write('SIM.stHmi.stCmd.bMarche', true);
+    check(w && !w.ok, 'WebSocket distant sans jeton : écriture refusée');
+    ro.ws.close();
+    const full = (() => { const ws = new WebSocket(`ws://${lanIp}:${s7.port}/ws?token=${TOKEN}`); const m = []; ws.onmessage = (e) => m.push(JSON.parse(e.data)); return { ws, m }; })();
+    await new Promise((res) => { full.ws.onopen = res; setTimeout(res, 2000); });
+    full.ws.send(JSON.stringify({ t: 'w', id: 9, path: 'SIM.stHmi.stCmd.bMarche', value: true }));
+    for (let i = 0; i < 40 && !full.m.some((x) => x.t === 'wr'); i++) await sleep(50);
+    w = full.m.find((x) => x.t === 'wr');
+    check(w?.ok === true, 'WebSocket distant avec jeton : écriture acceptée');
+    full.ws.close();
+  } finally {
+    const code = await stop(s7);
+    check(WIN ? code !== 'timeout' : code === 0, 'arrêt propre');
+    sanitizerClean(s7);
+  }
+}
+
+console.log('Kiosque');
+{
+  // navigateur absent ou fermé : le service s'arrête de lui-même (Node rejette les options du navigateur)
+  const s8 = await start(null, ['--kiosk', '--browser', process.execPath]);
+  const code = await Promise.race([s8.exited, sleep(5000).then(() => 'timeout')]);
+  check(code === 0 && s8.log().includes('navigateur fermé'), `navigateur fermé : service arrêté (code ${code})`);
+  await stop(s8);
+}
+if (!WIN) {
+  // faux navigateur : note ses arguments et son PID, puis attend (comme un navigateur ouvert)
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hmi-kiosk-'));
+  const fake = path.join(tmp, 'navigateur.sh');
+  fs.writeFileSync(fake, `#!/bin/sh\necho $$ > "${tmp}/pid"\nprintf '%s\\n' "$@" > "${tmp}/args"\nexec sleep 60\n`, { mode: 0o755 });
+  const s9 = await start(null, ['--kiosk', '--screen', 'demo', '--browser', fake]);
+  try {
+    for (let i = 0; i < 60 && !fs.existsSync(path.join(tmp, 'args')); i++) await sleep(50);
+    const args = fs.existsSync(path.join(tmp, 'args')) ? fs.readFileSync(path.join(tmp, 'args'), 'utf8').split('\n') : [];
+    check(args.includes('--kiosk') && args.includes(`http://127.0.0.1:${s9.port}/#/run/demo`), 'navigateur lancé en kiosque sur l\'écran choisi');
+    const prof = args.find((a) => a.startsWith('--user-data-dir='))?.slice(16) ?? '';
+    check(path.isAbsolute(prof) && prof.endsWith('kiosque-navigateur') && fs.existsSync(prof), 'profil de navigateur dédié (chemin absolu)');
+    const ses = await (await fetch(s9.base + '/api/session')).json();
+    check(ses.kiosk === true && ses.quit === true, 'session : kiosque, bouton Quitter actif');
+    const pid = Number(fs.readFileSync(path.join(tmp, 'pid'), 'utf8'));
+    await fetch(s9.base + '/api/quit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"code":0}' });
+    const code = await Promise.race([s9.exited, sleep(5000).then(() => 'timeout')]);
+    let alive = true;
+    for (let i = 0; i < 40 && alive; i++) { try { process.kill(pid, 0); await sleep(50); } catch { alive = false; } }
+    check(code === 0 && !alive, `Quitter : service arrêté (code ${code}) et navigateur fermé`);
+  } finally {
+    await stop(s9);
+    sanitizerClean(s9);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 console.log(`\n${checks} vérifications, ${failures} échec(s)`);
